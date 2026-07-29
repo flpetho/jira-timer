@@ -13,6 +13,7 @@ export async function GET(req: Request) {
 
   const configured = isConfigured();
   let issues: JiraIssue[] = [];
+  let doneIssues: JiraIssue[] = [];
   let sprint: JiraSprint | null = null;
   let jiraError: string | null = null;
 
@@ -20,11 +21,20 @@ export async function GET(req: Request) {
     try {
       const result = await getBoardIssues(boardId, mineOnly);
       issues = result.issues;
+      doneIssues = result.doneIssues;
       sprint = result.sprint;
     } catch (e: unknown) {
       jiraError = e instanceof Error ? e.message : String(e);
     }
   }
 
-  return NextResponse.json({ configured, jiraError, boardId, sprint, mineOnly, issues });
+  return NextResponse.json({
+    configured,
+    jiraError,
+    boardId,
+    sprint,
+    mineOnly,
+    issues,
+    doneIssues,
+  });
 }

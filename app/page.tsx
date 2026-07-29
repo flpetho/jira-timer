@@ -20,6 +20,18 @@ interface IssuesData {
   sprint: JiraSprint | null;
   mineOnly: boolean;
   issues: JiraIssue[];
+  /** Iteration work JIRA considers resolved, tracked by the timer or not. */
+  doneIssues: JiraIssue[];
+}
+
+/** A Completed row, which may come from JIRA, from local timer state, or both. */
+interface CompletedRow {
+  key: string;
+  summary: string;
+  status: string;
+  assignee: string | null;
+  estimateSeconds: number | null;
+  timer: StoryTimer | null;
 }
 
 async function jpost(url: string, body: unknown) {
@@ -206,9 +218,43 @@ export default function Home() {
   const hasRecordedTime = (s: StoryTimer) => live(s) >= 60 || (s.loggedSeconds ?? 0) > 0;
   const lastActivity = (s: StoryTimer) =>
     s.doneAt ?? s.segments[s.segments.length - 1]?.end ?? 0;
-  const completed = Object.values(stories)
+
+  // Completed is the union of two sources, deduped by key:
+  //   1. stories the timer recorded time against that JIRA no longer lists as open
+  //   2. iteration work JIRA reports as resolved, even if the timer never saw it
+  // (2) is why a story finished without the timer still appears — with no time
+  // badges, which is itself the useful signal for estimate-vs-actual.
+  const doneIssues = issuesData?.doneIssues ?? [];
+  const doneByKey = new Map(doneIssues.map((i) => [i.key, i]));
+  const completed: CompletedRow[] = [];
+  const seenCompleted = new Set<string>();
+
+  for (const s of Object.values(stories)
     .filter((s) => hasRecordedTime(s) && !openIssues.has(s.key))
-    .sort((a, b) => lastActivity(b) - lastActivity(a));
+    .sort((a, b) => lastActivity(b) - lastActivity(a))) {
+    // Prefer JIRA's copy of the metadata when it has one; it's more current.
+    const ji = doneByKey.get(s.key);
+    completed.push({
+      key: s.key,
+      summary: ji?.summary ?? s.summary,
+      status: ji?.status ?? s.status,
+      assignee: ji?.assignee ?? s.assignee,
+      estimateSeconds: s.estimateSeconds ?? ji?.estimateSeconds ?? null,
+      timer: s,
+    });
+    seenCompleted.add(s.key);
+  }
+  for (const i of doneIssues) {
+    if (seenCompleted.has(i.key)) continue;
+    completed.push({
+      key: i.key,
+      summary: i.summary,
+      status: i.status,
+      assignee: i.assignee,
+      estimateSeconds: i.estimateSeconds,
+      timer: stories[i.key] ?? null,
+    });
+  }
 
   // Board picker: filter the (often hundreds of) boards, cap the list, but always
   // keep the current selection visible as an option.
@@ -390,31 +436,33 @@ export default function Home() {
       {completed.length > 0 && (
         <>
           <div className="section-label">Completed</div>
-          {completed.map((s) => {
+          {completed.map((row) => {
+            const t = row.timer;
+            const tracked = live(t);
             // Finished with time the timer measured but never sent. Worth calling
             // out here, because this row is the only place it's still visible.
-            const unlogged = (s.loggedSeconds ?? 0) === 0 && live(s) >= 60;
+            const unlogged = t != null && (t.loggedSeconds ?? 0) === 0 && tracked >= 60;
             return (
-              <div className="row" key={s.key}>
+              <div className="row" key={row.key}>
                 <div className="grow">
                   <div className="line1">
-                    <span className="key">{s.key}</span>
-                    <span className="status-chip">{s.status}</span>
-                    <TimeChips tracked={live(s)} logged={s.loggedSeconds} />
+                    <span className="key">{row.key}</span>
+                    <span className="status-chip">{row.status}</span>
+                    <TimeChips tracked={tracked} logged={t?.loggedSeconds ?? null} />
                     {unlogged && <span className="chip-unlogged">Not logged to JIRA</span>}
-                    <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
+                    <span className="assignee">{row.assignee ?? 'Unassigned'}</span>
                   </div>
-                  <div className="summary" title={s.summary}>
-                    {s.summary}
+                  <div className="summary" title={row.summary}>
+                    {row.summary}
                   </div>
                   {/* Compared against tracked time, matching the iteration rows —
                       previously this row measured overrun against logged time instead. */}
-                  <MetaLine estimate={s.estimateSeconds} actual={live(s)} />
+                  <MetaLine estimate={row.estimateSeconds} actual={tracked} />
                 </div>
-                {unlogged && (
+                {unlogged && t && (
                   <button
                     className="small"
-                    onClick={() => setDoneFor(s)}
+                    onClick={() => setDoneFor(t)}
                     disabled={busy !== null}
                     title="Send this tracked time to JIRA as a worklog"
                   >

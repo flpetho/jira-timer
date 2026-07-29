@@ -176,29 +176,40 @@ export async function getActiveSprint(boardId: number): Promise<JiraSprint | nul
   return s ? { id: s.id, name: s.name } : null;
 }
 
+/** One page of issues from a board/sprint endpoint, filtered by JQL clauses. */
+async function fetchIssues(path: string, clauses: string[], order: string): Promise<JiraIssue[]> {
+  const jql = `${clauses.join(' AND ')} ORDER BY ${order}`;
+  const params = new URLSearchParams({ maxResults: '100', fields: ISSUE_FIELDS, jql });
+  const res = await jira(`${path}?${params.toString()}`);
+  if (!res.ok) throw new Error(`Board issues failed: ${res.status} ${await bodyText(res)}`);
+  const data = await res.json();
+  return (data.issues ?? []).map(mapIssue);
+}
+
 /**
- * Issues in the board's current iteration (active sprint). Falls back to the
- * board's issues when there's no active sprint. `mineOnly` restricts to the
- * current user; resolved issues are always hidden (the timer is for open work).
+ * The board's current iteration (active sprint), split by resolution. Falls back
+ * to the board's issues when there's no active sprint. `mineOnly` restricts both
+ * lists to the current user.
+ *
+ * `doneIssues` exists so the Completed section can show iteration work that was
+ * finished in JIRA even when the timer never tracked it — otherwise a story you
+ * completed without the timer is invisible here.
  */
 export async function getBoardIssues(
   boardId: number,
   mineOnly: boolean,
-): Promise<{ issues: JiraIssue[]; sprint: JiraSprint | null }> {
+): Promise<{ issues: JiraIssue[]; doneIssues: JiraIssue[]; sprint: JiraSprint | null }> {
   const sprint = await getActiveSprint(boardId);
-  const clauses = ['resolution = Unresolved'];
-  if (mineOnly) clauses.unshift('assignee = currentUser()');
-  const jql = `${clauses.join(' AND ')} ORDER BY status ASC, updated DESC`;
-
-  const params = new URLSearchParams({ maxResults: '100', fields: ISSUE_FIELDS, jql });
   const path = sprint
     ? `/rest/agile/1.0/board/${boardId}/sprint/${sprint.id}/issue`
     : `/rest/agile/1.0/board/${boardId}/issue`;
+  const mine = mineOnly ? ['assignee = currentUser()'] : [];
 
-  const res = await jira(`${path}?${params.toString()}`);
-  if (!res.ok) throw new Error(`Board issues failed: ${res.status} ${await bodyText(res)}`);
-  const data = await res.json();
-  return { issues: (data.issues ?? []).map(mapIssue), sprint };
+  const [issues, doneIssues] = await Promise.all([
+    fetchIssues(path, [...mine, 'resolution = Unresolved'], 'status ASC, updated DESC'),
+    fetchIssues(path, [...mine, 'resolution != Unresolved'], 'updated DESC'),
+  ]);
+  return { issues, doneIssues, sprint };
 }
 
 export async function getTransitions(key: string): Promise<JiraTransition[]> {
