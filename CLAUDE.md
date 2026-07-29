@@ -15,7 +15,8 @@ sh scripts/service.sh update   # rebuild + restart the always-on launchd agent
 ```
 
 Port 4100 is often occupied by the user's always-on instance. Use
-`npm run dev -- -p 4101` rather than stopping their timer.
+`npm run dev -- -p 4101` rather than stopping their timer — safe because dev
+builds into `.next-dev` (see below).
 
 ## The one important design rule
 
@@ -61,6 +62,13 @@ separate module — that's why `lib/conn.ts` exists apart from `lib/jira.ts`.
 **Timer actions must not depend on JIRA.** `/api/timer` only touches the local
 state file. Keep it that way: the timer has to work when JIRA is down, and the
 setup screen deliberately still offers a Pause button.
+
+**Never let dev and production share a build directory.** `next dev` and
+`next start` both default to `./.next`, so a dev server in this checkout would
+overwrite the build the launchd agent is serving; it then 500s with
+`MODULE_NOT_FOUND` on chunks that vanished, which in a browser looks like a blank
+page. `next.config.js` sends dev to `.next-dev` to prevent exactly that. Don't
+collapse the two.
 
 **State lives outside the repo**, at `~/.jira-timer/state.json`. It's the user's
 real tracked time. Never overwrite it while testing — set `HOME` to a temp dir to
