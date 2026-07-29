@@ -30,6 +30,12 @@ export interface JiraIssue {
   issuetype: string;
   priority: string | null;
   estimateSeconds: number | null;
+  /**
+   * JIRA's total time spent on the issue — the source of truth. Includes worklogs
+   * created before this app was installed, or outside it, or by someone else.
+   * Distinct from StoryTimer.loggedSeconds, which is only what this app sent.
+   */
+  secondsSpent: number | null;
   description: string | null;
   /** Which board this came from. Only set in the all-boards view. */
   boardName?: string | null;

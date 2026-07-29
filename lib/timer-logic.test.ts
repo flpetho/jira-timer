@@ -118,4 +118,16 @@ describe('pendingLogSeconds', () => {
     // 12m actual rounds to 10m; 5m already logged leaves 5m new, not 7m.
     expect(pendingLogSeconds(12 * 60, 5 * 60, 5)).toBe(5 * 60);
   });
+
+  it('counts only our own worklogs, never JIRA total time spent', () => {
+    // Someone logged 3h in JIRA before installing the timer, then tracks 40m here.
+    // `alreadyLogged` must stay "what this app sent" (0), so the full 40m is new.
+    // Passing JIRA's 3h total would yield a negative and silently log nothing.
+    const trackedHere = 40 * 60;
+    const loggedByThisApp = 0;
+    expect(pendingLogSeconds(trackedHere, loggedByThisApp, 5)).toBe(40 * 60);
+
+    const jiraTotalIncludingExternal = 3 * 3600;
+    expect(pendingLogSeconds(trackedHere, jiraTotalIncludingExternal, 5)).toBeLessThan(0);
+  });
 });

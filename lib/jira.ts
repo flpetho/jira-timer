@@ -106,12 +106,15 @@ function mapIssue(i: any): JiraIssue {
     issuetype: f.issuetype?.name ?? '?',
     priority: f.priority?.name ?? null,
     estimateSeconds: f.timeoriginalestimate ?? f.timetracking?.originalEstimateSeconds ?? null,
+    // JIRA's own total for the issue, including worklogs made before this app
+    // existed or outside it. This — not our local tally — is the time spent.
+    secondsSpent: f.timespent ?? f.timetracking?.timeSpentSeconds ?? null,
     description: descriptionToText(f.description),
   };
 }
 
 const ISSUE_FIELDS =
-  'summary,status,assignee,issuetype,priority,timeoriginalestimate,timetracking,description';
+  'summary,status,assignee,issuetype,priority,timeoriginalestimate,timetracking,timespent,description';
 
 /** Flatten Atlassian Document Format (ADF) — or a plain string — to readable text. */
 function adfToText(node: any): string {

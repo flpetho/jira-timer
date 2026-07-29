@@ -36,6 +36,8 @@ interface CompletedRow {
   status: string;
   assignee: string | null;
   estimateSeconds: number | null;
+  /** JIRA's total, when we have a JIRA copy of the issue. */
+  secondsSpent: number | null;
   timer: StoryTimer | null;
 }
 
@@ -247,13 +249,20 @@ export default function Home() {
   };
 
   const live = (t: StoryTimer | null | undefined) => (t ? activeSeconds(t.segments, now) : 0);
+  /**
+   * Tracked time this app hasn't sent yet. Subtracts only our own worklogs — using
+   * JIRA's total here would cancel out time logged before the app existed.
+   */
+  const unlogged = (t: StoryTimer | null | undefined) =>
+    t ? Math.max(0, live(t) - (t.loggedSeconds ?? 0)) : 0;
 
   // Derive the view from JIRA issues + local timer state (both already in memory).
   const stories = timer?.stories ?? {};
   const activeKey = timer?.activeKey ?? null;
   const active = activeKey ? stories[activeKey] ?? null : null;
   const issues = issuesData?.issues ?? [];
-  const activeDesc = active ? issues.find((i) => i.key === active.key)?.description ?? null : null;
+  const activeIssue = active ? issues.find((i) => i.key === active.key) ?? null : null;
+  const activeDesc = activeIssue?.description ?? null;
   // JIRA decides where a story sits. /api/stories returns only unresolved issues,
   // so anything it lists is live work — even if we logged time against it earlier.
   const openIssues = new Map(issues.map((i) => [i.key, i]));
@@ -293,6 +302,9 @@ export default function Home() {
       status: ji?.status ?? s.status,
       assignee: ji?.assignee ?? s.assignee,
       estimateSeconds: s.estimateSeconds ?? ji?.estimateSeconds ?? null,
+      // Falls back to our own tally when JIRA has no copy here (e.g. a story from
+      // another board) — the best figure available in that case.
+      secondsSpent: ji?.secondsSpent ?? s.loggedSeconds ?? null,
       timer: s,
     });
     seenCompleted.add(s.key);
@@ -305,6 +317,7 @@ export default function Home() {
       status: i.status,
       assignee: i.assignee,
       estimateSeconds: i.estimateSeconds,
+      secondsSpent: i.secondsSpent,
       timer: stories[i.key] ?? null,
     });
   }
@@ -451,10 +464,10 @@ export default function Home() {
           <div className="active-top">
             <span className="key">{active.key}</span>
             <span className="status-chip">{active.status}</span>
-            {/* No tracked chip here — the clock below is the tracked figure. */}
-            {active.loggedSeconds ? (
-              <span className="chip-logged" title="Already sent to JIRA as a worklog">
-                {formatDurationShort(active.loggedSeconds)} logged
+            {/* No unlogged chip here — the clock below already shows this session. */}
+            {activeIssue?.secondsSpent ? (
+              <span className="chip-logged" title="Time logged on this issue in JIRA">
+                {formatDurationShort(activeIssue.secondsSpent)} in JIRA
               </span>
             ) : null}
             <span className="assignee">{active.assignee ?? 'Unassigned'}</span>
@@ -463,7 +476,11 @@ export default function Home() {
           <div className={`clock ${isRunning(active.segments) ? 'running' : 'paused'}`}>
             {formatClock(live(active))}
           </div>
-          <EstLine seconds={live(active)} estimate={active.estimateSeconds} />
+          <EstLine
+            seconds={live(active)}
+            spent={(activeIssue?.secondsSpent ?? 0) + unlogged(active)}
+            estimate={active.estimateSeconds}
+          />
           {activeDesc && (
             <Description
               text={activeDesc}
@@ -526,7 +543,7 @@ export default function Home() {
                 <div className="line1">
                   <span className="key">{issue.key}</span>
                   <span className="status-chip">{issue.status}</span>
-                  <TimeChips tracked={prior} logged={t?.loggedSeconds ?? null} />
+                  <TimeChips jiraSpent={issue.secondsSpent} unlogged={unlogged(t)} />
                   {/* Only meaningful when boards are pooled; otherwise it's the same
                       board on every row and just adds noise. */}
                   {issue.boardName && <span className="chip-board">{issue.boardName}</span>}
@@ -535,7 +552,11 @@ export default function Home() {
                 <div className="summary" title={issue.summary}>
                   {issue.summary}
                 </div>
-                <MetaLine estimate={issue.estimateSeconds} actual={prior} />
+                {/* Overrun measured against JIRA's total, since that's the real actual. */}
+                <MetaLine
+                  estimate={issue.estimateSeconds}
+                  actual={(issue.secondsSpent ?? 0) + unlogged(t)}
+                />
                 {issue.description && (
                   <Description
                     text={issue.description}
@@ -561,25 +582,26 @@ export default function Home() {
             const tracked = live(t);
             // Finished with time the timer measured but never sent. Worth calling
             // out here, because this row is the only place it's still visible.
-            const unlogged = t != null && (t.loggedSeconds ?? 0) === 0 && tracked >= 60;
+            const notLogged = t != null && (t.loggedSeconds ?? 0) === 0 && tracked >= 60;
             return (
               <div className="row" key={row.key}>
                 <div className="grow">
                   <div className="line1">
                     <span className="key">{row.key}</span>
                     <span className="status-chip">{row.status}</span>
-                    <TimeChips tracked={tracked} logged={t?.loggedSeconds ?? null} />
-                    {unlogged && <span className="chip-unlogged">Not logged to JIRA</span>}
+                    <TimeChips jiraSpent={row.secondsSpent} unlogged={unlogged(t)} />
+                    {notLogged && <span className="chip-unlogged">Not logged to JIRA</span>}
                     <span className="assignee">{row.assignee ?? 'Unassigned'}</span>
                   </div>
                   <div className="summary" title={row.summary}>
                     {row.summary}
                   </div>
-                  {/* Compared against tracked time, matching the iteration rows —
-                      previously this row measured overrun against logged time instead. */}
-                  <MetaLine estimate={row.estimateSeconds} actual={tracked} />
+                  <MetaLine
+                    estimate={row.estimateSeconds}
+                    actual={(row.secondsSpent ?? 0) + unlogged(t)}
+                  />
                 </div>
-                {unlogged && t && (
+                {notLogged && t && (
                   <button
                     className="small"
                     onClick={() => setDoneFor(t)}
@@ -603,6 +625,9 @@ export default function Home() {
           onDone={(state) => {
             setTimer(state);
             setDoneFor(null);
+            // Pull JIRA again so the "in JIRA" figure reflects the worklog we just
+            // pushed, instead of lagging until the next 30s poll.
+            if (selectedBoard != null) loadIssues(selectedBoard, mineOnly);
           }}
         />
       )}
@@ -679,24 +704,31 @@ function Description({
 }
 
 /**
- * The two time facts a story can carry, always labelled so they can't be misread
- * as each other: what the timer measured here, and how much of it JIRA has.
- * They diverge legitimately — rounding, or more work after a first Done.
+ * Two labelled facts per story, and only two:
+ *
+ *  - what JIRA says is spent, which is the truth. Includes worklogs from before
+ *    this app was installed and any made outside it, so it can exceed anything
+ *    the timer measured.
+ *  - what the timer has measured but not yet sent, which is the only actionable
+ *    number: it's exactly what pressing Done will add.
+ *
+ * `unlogged` is tracked minus what THIS app already logged — never minus JIRA's
+ * total, or pre-existing time would cancel out newly tracked work.
  */
-function TimeChips({ tracked, logged }: { tracked: number; logged: number | null }) {
-  const showTracked = tracked >= 60; // below a minute it would render "0m"
-  const loggedSecs = logged ?? 0;
-  if (!showTracked && loggedSecs <= 0) return null;
+function TimeChips({ jiraSpent, unlogged }: { jiraSpent: number | null; unlogged: number }) {
+  const spent = jiraSpent ?? 0;
+  const showUnlogged = unlogged >= 60; // below a minute it would render "0m"
+  if (spent <= 0 && !showUnlogged) return null;
   return (
     <>
-      {showTracked && (
-        <span className="chip-tracked" title="Measured by the timer on this machine">
-          {formatDurationShort(tracked)} tracked
+      {spent > 0 && (
+        <span className="chip-logged" title="Time logged on this issue in JIRA">
+          {formatDurationShort(spent)} in JIRA
         </span>
       )}
-      {loggedSecs > 0 && (
-        <span className="chip-logged" title="Already sent to JIRA as a worklog">
-          {formatDurationShort(loggedSecs)} logged
+      {showUnlogged && (
+        <span className="chip-tracked" title="Tracked here but not yet sent to JIRA">
+          {formatDurationShort(unlogged)} unlogged
         </span>
       )}
     </>
@@ -721,22 +753,37 @@ function MetaLine({ estimate, actual }: { estimate: number | null; actual: numbe
   );
 }
 
-function EstLine({ seconds, estimate }: { seconds: number; estimate: number | null }) {
+/**
+ * `seconds` is this session's clock; `spent` is the real total — JIRA's logged time
+ * plus anything tracked here and not yet sent. The estimate is judged against
+ * `spent`, so a story that already had hours logged before this app shows an
+ * honest remainder rather than pretending work started from zero.
+ */
+function EstLine({
+  seconds,
+  spent,
+  estimate,
+}: {
+  seconds: number;
+  spent: number;
+  estimate: number | null;
+}) {
+  const total = Math.max(seconds, spent);
   if (!estimate) {
     return (
       <div className="est-line">
-        <b>{formatDurationShort(seconds)}</b> active · no estimate set
+        <b>{formatDurationShort(total)}</b> spent · no estimate set
       </div>
     );
   }
-  const over = seconds > estimate;
+  const over = total > estimate;
   return (
     <div className="est-line">
-      <b>{formatDurationShort(seconds)}</b> active of <b>{formatDurationShort(estimate)}</b> estimate ·{' '}
+      <b>{formatDurationShort(total)}</b> spent of <b>{formatDurationShort(estimate)}</b> estimate ·{' '}
       <span className={over ? 'over' : 'under'}>
         {over
-          ? `${formatDurationShort(seconds - estimate)} over`
-          : `${formatDurationShort(estimate - seconds)} left`}
+          ? `${formatDurationShort(total - estimate)} over`
+          : `${formatDurationShort(estimate - total)} left`}
       </span>
     </div>
   );
