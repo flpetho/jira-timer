@@ -4,6 +4,7 @@
   "private": true,
   "description": "A small local widget: read my assigned JIRA stories, track active time against one, then log hours + transition status back to JIRA.",
   "scripts": {
+    "predev": "node scripts/preflight.mjs",
     "dev": "next dev -p 4100",
     "build": "next build",
     "start": "next start -p 4100",
