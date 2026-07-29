@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { activeSeconds, formatClock, formatDurationShort, isRunning } from '@/lib/time';
+import type { MyselfResult } from '@/lib/conn';
+import SetupScreen from './SetupScreen';
 import type {
   JiraBoard,
   JiraIssue,
@@ -11,13 +13,6 @@ import type {
   TimerState,
 } from '@/lib/types';
 
-interface Me {
-  ok: boolean;
-  status: number;
-  name?: string;
-  email?: string;
-  error?: string;
-}
 interface IssuesData {
   configured: boolean;
   jiraError: string | null;
@@ -37,7 +32,7 @@ async function jpost(url: string, body: unknown) {
 }
 
 export default function Home() {
-  const [me, setMe] = useState<Me | null>(null);
+  const [me, setMe] = useState<MyselfResult | null>(null);
   const [issuesData, setIssuesData] = useState<IssuesData | null>(null);
   const [timer, setTimer] = useState<TimerState | null>(null);
   const [boards, setBoards] = useState<JiraBoard[]>([]);
@@ -66,7 +61,17 @@ export default function Home() {
       const res = await fetch('/api/me', { cache: 'no-store' });
       setMe(await res.json());
     } catch {
-      setMe({ ok: false, status: 0, error: 'unreachable' });
+      // This branch means the timer's OWN server didn't answer — not JIRA.
+      // Most often it's mid-restart after `service.sh update`.
+      setMe({
+        ok: false,
+        status: 0,
+        reason: 'unreachable',
+        missing: [],
+        baseUrl: null,
+        devMode: true,
+        error: "Couldn't reach the timer's own server. It may be restarting — retry in a moment.",
+      });
     }
   }, []);
 
@@ -110,13 +115,14 @@ export default function Home() {
     setHydrated(true);
   }, []);
 
-  // Connection check + local timer state (both cheap).
+  // Connection check + local timer state (both cheap). While disconnected we poll
+  // fast, so that saving credentials during setup flips the screen over on its own.
   useEffect(() => {
     loadMe();
     loadTimer();
-    const t = setInterval(loadMe, 60_000);
+    const t = setInterval(loadMe, connected ? 60_000 : 5_000);
     return () => clearInterval(t);
-  }, [loadMe, loadTimer]);
+  }, [loadMe, loadTimer, connected]);
 
   // Load boards once connected.
   useEffect(() => {
@@ -189,34 +195,31 @@ export default function Home() {
       ? ([boards.find((b) => b.id === selectedBoard), ...shownBoards].filter(Boolean) as JiraBoard[])
       : shownBoards;
 
+  // Until JIRA is reachable there is nothing to pick a board from, so the setup
+  // screen takes over the body. The header stays put so it still reads as the app.
+  if (!connected) {
+    return (
+      <div className="wrap">
+        <Header me={me} connected={connected} />
+        <SetupScreen
+          me={me}
+          timer={timer}
+          now={now}
+          onRetry={() => {
+            loadMe();
+            loadTimer();
+          }}
+          onPause={pause}
+          pausing={busy === 'pause'}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="wrap">
-      <div className="header">
-        <div className="brand">
-          JIRA <span>Timer</span>
-        </div>
-        <div className="header-right">
-          <button
-            className="reload-btn"
-            title="Reload the app"
-            aria-label="Reload the app"
-            onClick={() => window.location.reload()}
-          >
-            ↻
-          </button>
-          <div className="conn" title={me?.error || ''}>
-            <span className={`dot ${connected ? 'ok' : me ? 'bad' : ''}`} />
-            {connected ? `Connected as ${me?.name ?? 'JIRA'}` : me ? 'Not connected' : 'Checking…'}
-          </div>
-        </div>
-      </div>
+      <Header me={me} connected={connected} />
 
-      {issuesData && !issuesData.configured && (
-        <div className="banner warn">
-          No JIRA token configured. Add <code>JIRA_API_TOKEN</code> to <code>.env.local</code> and
-          restart, then this will connect.
-        </div>
-      )}
       {issuesData?.jiraError && <div className="banner bad">JIRA error: {issuesData.jiraError}</div>}
 
       {/* Board picker + assignee filter */}
@@ -376,6 +379,30 @@ export default function Home() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function Header({ me, connected }: { me: MyselfResult | null; connected: boolean }) {
+  return (
+    <div className="header">
+      <div className="brand">
+        JIRA <span>Timer</span>
+      </div>
+      <div className="header-right">
+        <button
+          className="reload-btn"
+          title="Reload the app"
+          aria-label="Reload the app"
+          onClick={() => window.location.reload()}
+        >
+          ↻
+        </button>
+        <div className="conn" title={me?.error || ''}>
+          <span className={`dot ${connected ? 'ok' : me ? 'bad' : ''}`} />
+          {connected ? `Connected as ${me?.name ?? 'JIRA'}` : me ? 'Not connected' : 'Checking…'}
+        </div>
+      </div>
     </div>
   );
 }

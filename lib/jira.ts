@@ -1,5 +1,8 @@
 import 'server-only';
 import type { JiraIssue, JiraTransition, JiraBoard, JiraSprint } from './types';
+import { missingCreds, reasonForStatus, type MyselfResult } from './conn';
+
+export type { MyselfResult };
 
 function creds() {
   const email = process.env.JIRA_EMAIL;
@@ -8,9 +11,9 @@ function creds() {
   return { email, token, base };
 }
 
+/** Single definition of "configured": nothing in CRED_VARS is missing. */
 export function isConfigured(): boolean {
-  const { email, token, base } = creds();
-  return Boolean(email && token && base);
+  return missingCreds(process.env).length === 0;
 }
 
 function authHeader(): string {
@@ -42,23 +45,54 @@ async function bodyText(res: Response): Promise<string> {
   }
 }
 
-export interface MyselfResult {
-  ok: boolean;
-  status: number;
-  name?: string;
-  email?: string;
-  error?: string;
-}
-
 export async function getMyself(): Promise<MyselfResult> {
-  if (!isConfigured()) return { ok: false, status: 0, error: 'No JIRA credentials configured.' };
+  const missing = missingCreds(process.env);
+  // baseUrl is echoed back so the setup screen can prefill what's already known.
+  // Suppressed while it's one of the missing vars, so we never hand back a placeholder.
+  const { base } = creds();
+  const baseUrl = missing.includes('JIRA_BASE_URL') ? null : base || null;
+  const devMode = process.env.NODE_ENV !== 'production';
+  const common = { missing, baseUrl, devMode };
+
+  if (missing.length) {
+    return {
+      ok: false,
+      status: 0,
+      reason: 'unconfigured',
+      ...common,
+      error: `Not configured: ${missing.join(', ')}`,
+    };
+  }
+
   try {
     const res = await jira('/rest/api/2/myself');
-    if (!res.ok) return { ok: false, status: res.status, error: await bodyText(res) };
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        reason: reasonForStatus(res.status),
+        ...common,
+        error: await bodyText(res),
+      };
+    }
     const d = await res.json();
-    return { ok: true, status: 200, name: d.displayName, email: d.emailAddress };
+    return {
+      ok: true,
+      status: 200,
+      reason: 'ok',
+      ...common,
+      name: d.displayName,
+      email: d.emailAddress,
+    };
   } catch (e: unknown) {
-    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+    // A thrown fetch means DNS failure, refused connection, or offline.
+    return {
+      ok: false,
+      status: 0,
+      reason: 'unreachable',
+      ...common,
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
