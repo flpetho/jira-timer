@@ -50,6 +50,12 @@ export interface MyselfResult {
   baseUrl: string | null;
   /** True when `next dev` is running, which reloads .env.local without a restart. */
   devMode: boolean;
+  /**
+   * Activity labels from JIRA_ACTIVITIES. Empty means the feature is off and Pause
+   * behaves as it did before activities existed. Config rather than connection
+   * state, but this is the one endpoint the client already polls.
+   */
+  activities: string[];
   name?: string;
   email?: string;
   error?: string;

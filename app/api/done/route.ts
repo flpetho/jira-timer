@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readState, writeState } from '@/lib/store';
-import { markDone, pendingLogSeconds } from '@/lib/timer-logic';
+import { markDone, pendingLogSeconds, unloggedByActivity } from '@/lib/timer-logic';
+import { apportion } from '@/lib/activities';
 import { activeSeconds } from '@/lib/time';
 import { addWorklog, doTransition } from '@/lib/jira';
 
@@ -40,14 +41,37 @@ export async function POST(req: Request) {
   }
 
   const startedMs = story.segments[0]?.start ?? now;
-  const comment = note ? `${note} (via jira-timer)` : 'Tracked via jira-timer';
+  const suffix = note ? `${note} (via jira-timer)` : 'Tracked via jira-timer';
+
+  // One worklog per activity, so the breakdown is visible in JIRA's Work Log tab.
+  // `rounded` is apportioned rather than each activity being rounded on its own,
+  // which would inflate the total (three 2m chunks -> three 5m worklogs).
+  const groups = unloggedByActivity(story, now);
+  const shares = apportion(rounded, groups);
+  const posts =
+    shares.length > 0
+      ? shares.map((s) => ({ seconds: s.seconds, comment: `${s.activity} — ${suffix}` }))
+      : [{ seconds: rounded, comment: suffix }];
 
   try {
-    const { id } = await addWorklog(key, rounded, comment, startedMs);
+    const ids: string[] = [];
+    // Sequential on purpose: JIRA recomputes timespent per worklog, and concurrent
+    // writes to the same issue have been known to drop one.
+    for (const p of posts) {
+      const { id } = await addWorklog(key, p.seconds, p.comment, startedMs);
+      ids.push(id);
+    }
     if (transitionId) await doTransition(key, transitionId);
-    markDone(state, key, now, id, rounded);
+    markDone(state, key, now, ids[ids.length - 1], rounded);
     await writeState(state);
-    return NextResponse.json({ ok: true, worklogId: id, loggedSeconds: rounded, state });
+    return NextResponse.json({
+      ok: true,
+      worklogId: ids[ids.length - 1],
+      worklogIds: ids,
+      loggedSeconds: rounded,
+      breakdown: shares,
+      state,
+    });
   } catch (e: unknown) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },

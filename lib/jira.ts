@@ -1,6 +1,7 @@
 import 'server-only';
 import type { JiraIssue, JiraTransition, JiraBoard, JiraSprint } from './types';
 import { missingCreds, reasonForStatus, type MyselfResult } from './conn';
+import { parseActivities } from './activities';
 
 export type { MyselfResult };
 
@@ -52,7 +53,8 @@ export async function getMyself(): Promise<MyselfResult> {
   const { base } = creds();
   const baseUrl = missing.includes('JIRA_BASE_URL') ? null : base || null;
   const devMode = process.env.NODE_ENV !== 'production';
-  const common = { missing, baseUrl, devMode };
+  const activities = parseActivities(process.env.JIRA_ACTIVITIES);
+  const common = { missing, baseUrl, devMode, activities };
 
   if (missing.length) {
     return {

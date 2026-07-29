@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { activeSeconds, formatClock, formatDurationShort, isRunning } from '@/lib/time';
 import type { MyselfResult } from '@/lib/conn';
+import { UNLABELLED } from '@/lib/activities';
+import { unloggedByActivity } from '@/lib/timer-logic';
 import SetupScreen from './SetupScreen';
 import type {
   JiraBoard,
@@ -100,6 +102,7 @@ export default function Home() {
         missing: [],
         baseUrl: null,
         devMode: true,
+        activities: [],
         error: "Couldn't reach the timer's own server. It may be restarting — retry in a moment.",
       });
     }
@@ -241,9 +244,10 @@ export default function Home() {
     setBusy(null);
   };
 
-  const pause = async () => {
-    setBusy('pause');
-    const { ok, data } = await jpost('/api/timer', { action: 'pause' });
+  // `activity` labels the chunk that just ended. Omitted for a plain Pause.
+  const pause = async (activity?: string) => {
+    setBusy(activity ? `stop:${activity}` : 'pause');
+    const { ok, data } = await jpost('/api/timer', { action: 'pause', activity });
     if (ok) setTimer(data as TimerState);
     setBusy(null);
   };
@@ -261,6 +265,7 @@ export default function Home() {
   const activeKey = timer?.activeKey ?? null;
   const active = activeKey ? stories[activeKey] ?? null : null;
   const issues = issuesData?.issues ?? [];
+  const activities = me?.activities ?? [];
   const activeIssue = active ? issues.find((i) => i.key === active.key) ?? null : null;
   const activeDesc = activeIssue?.description ?? null;
   // JIRA decides where a story sits. /api/stories returns only unresolved issues,
@@ -488,8 +493,36 @@ export default function Home() {
               onToggle={() => toggleDesc(active.key)}
             />
           )}
+          {/* Stopping and attributing in one click. The story stays open either
+              way — only Done writes to JIRA. */}
+          {activities.length > 0 && isRunning(active.segments) && (
+            <div className="stop-as">
+              <div className="stop-as-label">Stop and log as…</div>
+              <div className="stop-as-buttons">
+                {activities.map((a) => (
+                  <button
+                    key={a}
+                    className="small"
+                    onClick={() => pause(a)}
+                    disabled={busy !== null}
+                  >
+                    {busy === `stop:${a}` ? 'Stopping…' : a}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <ActivityBreakdown story={active} now={now} />
           <div className="row-actions">
-            <button onClick={pause} disabled={busy !== null || !isRunning(active.segments)}>
+            <button
+              onClick={() => pause()}
+              disabled={busy !== null || !isRunning(active.segments)}
+              title={
+                activities.length > 0
+                  ? 'Stop without attributing — you can label it later'
+                  : undefined
+              }
+            >
               Pause
             </button>
             <button className="ok" onClick={() => setDoneFor(active)} disabled={busy !== null}>
@@ -631,6 +664,29 @@ export default function Home() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Where this story's tracked time has gone. Only the unlogged part — once a chunk
+ * is in JIRA, the "in JIRA" figure covers it and repeating it here would double up.
+ */
+function ActivityBreakdown({ story, now }: { story: StoryTimer; now: number }) {
+  const groups = unloggedByActivity(story, now);
+  if (groups.length === 0) return null;
+  // A single unlabelled bucket is just the clock restated.
+  if (groups.length === 1 && groups[0].activity === UNLABELLED) return null;
+  const total = groups.reduce((s, g) => s + g.seconds, 0);
+  return (
+    <div className="breakdown">
+      {groups.map((g) => (
+        <div className="breakdown-row" key={g.activity}>
+          <span className={g.activity === UNLABELLED ? 'faint' : 'muted'}>{g.activity}</span>
+          <span className="bar" style={{ width: `${Math.round((g.seconds / total) * 100)}%` }} />
+          <b>{formatDurationShort(g.seconds)}</b>
+        </div>
+      ))}
     </div>
   );
 }

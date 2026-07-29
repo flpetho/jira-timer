@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { emptyState, startTimer, pauseActive, markDone, pendingLogSeconds } from './timer-logic';
+import {
+  emptyState,
+  startTimer,
+  pauseActive,
+  markDone,
+  pendingLogSeconds,
+  unloggedByActivity,
+  normalizeState,
+} from './timer-logic';
+import type { TimerState } from './types';
 import { activeSeconds } from './time';
 import type { IssueMeta } from './timer-logic';
 
@@ -96,6 +105,81 @@ describe('reopening a completed story', () => {
     s = markDone(s, 'TEST-67', 10 * M, 'w1', 600);
     s = startTimer(s, issue('TEST-67'), 20 * M);
     expect(s.stories['TEST-67'].loggedSeconds).toBe(600);
+  });
+});
+
+describe('activity attribution', () => {
+  it('labels the chunk that just ended, not the whole story', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 30 * M, 'Meeting');
+    s = startTimer(s, issue('TEST-1'), 40 * M);
+    s = pauseActive(s, 100 * M, 'Building');
+    expect(s.stories['TEST-1'].segments.map((g) => g.activity)).toEqual(['Meeting', 'Building']);
+  });
+
+  it('leaves a plain pause unlabelled', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 30 * M);
+    expect(s.stories['TEST-1'].segments[0].activity).toBeUndefined();
+  });
+
+  it('totals unlogged time per activity, bucketing unlabelled chunks', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 50 * M, 'Building');
+    s = startTimer(s, issue('TEST-1'), 60 * M);
+    s = pauseActive(s, 65 * M); // no label
+    s = startTimer(s, issue('TEST-1'), 70 * M);
+    s = pauseActive(s, 80 * M, 'Meeting'); // same activity again — must merge
+    expect(unloggedByActivity(s.stories['TEST-1'], 99 * M)).toEqual([
+      { activity: 'Meeting', seconds: 20 * 60 },
+      { activity: 'Building', seconds: 30 * 60 },
+      { activity: 'Unlabelled', seconds: 5 * 60 },
+    ]);
+  });
+
+  it('excludes chunks already covered by a worklog', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 600);
+    expect(unloggedByActivity(s.stories['TEST-1'], 10 * M)).toEqual([]);
+
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 35 * M, 'Building');
+    // Only the new chunk, so a second Done can't re-send the meeting.
+    expect(unloggedByActivity(s.stories['TEST-1'], 35 * M)).toEqual([
+      { activity: 'Building', seconds: 15 * 60 },
+    ]);
+  });
+});
+
+describe('normalizeState', () => {
+  it('backfills logged on segments written before activities existed', () => {
+    // Shape of an old state file: logged as one lump, no per-segment flags.
+    const old: TimerState = {
+      activeKey: null,
+      stories: {
+        'TEST-1': {
+          key: 'TEST-1',
+          summary: 's',
+          status: 'To Do',
+          assignee: null,
+          estimateSeconds: null,
+          segments: [{ start: 0, end: 60 * M }],
+          doneAt: 60 * M,
+          worklogId: 'w1',
+          loggedSeconds: 3600,
+        },
+      },
+    };
+    expect(normalizeState(old).stories['TEST-1'].segments[0].logged).toBe(true);
+  });
+
+  it('leaves an unlogged story alone', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 30 * M, 'Building');
+    expect(normalizeState(s).stories['TEST-1'].segments[0].logged).toBeUndefined();
   });
 });
 

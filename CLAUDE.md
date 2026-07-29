@@ -59,6 +59,19 @@ scripts/
 throws outside a server context. Anything that needs unit tests goes in a
 separate module — that's why `lib/conn.ts` exists apart from `lib/jira.ts`.
 
+**Round the total, never the parts.** Done splits one rounded total across
+activities (`apportion` in `lib/activities.ts`) using largest-remainder. Rounding
+each activity separately inflates badly — three 2-minute chunks at a 5-minute
+increment would log 15 minutes for 6 minutes of work, corrupting the
+estimate-vs-actual data the tool exists to produce.
+
+**Three time quantities, easily conflated.** `tracked` (local segments),
+`StoryTimer.loggedSeconds` (what *this app* sent), and `JiraIssue.secondsSpent`
+(JIRA's total, including worklogs from before this app existed). Display uses
+JIRA's total; `pendingLogSeconds` subtracts only our own. Swapping those would
+cancel a user's pre-existing time against newly tracked work and silently log
+nothing.
+
 **Timer actions must not depend on JIRA.** `/api/timer` only touches the local
 state file. Keep it that way: the timer has to work when JIRA is down, and the
 setup screen deliberately still offers a Pause button.

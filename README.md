@@ -102,6 +102,10 @@ quickly if something broke.
   never touches the local timer store, so timer buttons don't wait on JIRA.
 - **Start/Pause** open and close time segments. Active time is the sum of
   segments (`lib/time.ts`), which is why idle time never counts.
+- **Stop and log as…** closes the current segment and tags it with an activity
+  (meeting, building, testing — see `JIRA_ACTIVITIES`). The story stays open; only
+  Done writes to JIRA, and it posts one worklog per activity so the breakdown is
+  visible in the issue's Work Log tab.
 - **Done** posts a worklog rounded to `TIMER_ROUND_MINUTES` and optionally
   transitions the story. The returned worklog id is stored so a story can't be
   logged twice.
@@ -116,6 +120,7 @@ quickly if something broke.
 | `JIRA_EMAIL` | the Atlassian account that created the token |
 | `JIRA_API_TOKEN` | your personal API token — never commit this |
 | `JIRA_BOARD_MATCH` | part of a board name to preselect; blank = first board |
+| `JIRA_ACTIVITIES` | comma-separated activity labels; blank turns the feature off |
 | `TIMER_ROUND_MINUTES` | round logged time to the nearest N minutes (default 5) |
 
 `.env.local` is gitignored. Don't put your token anywhere else.

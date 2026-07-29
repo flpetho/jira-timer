@@ -3,6 +3,10 @@
 export interface Segment {
   start: number;
   end: number | null; // null = currently running
+  /** What this chunk was spent on. Absent on pre-activity data → Unlabelled. */
+  activity?: string | null;
+  /** True once a worklog has covered this chunk, so Done won't re-log it. */
+  logged?: boolean;
 }
 
 export interface StoryTimer {

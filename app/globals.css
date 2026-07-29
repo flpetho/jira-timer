@@ -160,6 +160,35 @@ html, body {
 
 .row-actions { display: flex; gap: 8px; }
 
+/* Stop-and-attribute buttons on the running card. */
+.stop-as { margin: 4px 0 14px; }
+.stop-as-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  margin-bottom: 7px;
+}
+.stop-as-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Where this story's unlogged time has gone. */
+.breakdown { margin: 0 0 14px; display: flex; flex-direction: column; gap: 5px; }
+.breakdown-row {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.breakdown-row .bar {
+  height: 4px;
+  min-width: 2px;
+  background: var(--accent);
+  opacity: 0.45;
+  border-radius: 2px;
+}
+.breakdown-row b { font-variant-numeric: tabular-nums; font-weight: 600; }
+
 /* Up-next / completed rows */
 .row {
   display: flex;

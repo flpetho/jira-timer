@@ -22,7 +22,10 @@ export async function POST(req: Request) {
     }
     startTimer(state, issue, now);
   } else if (action === 'pause') {
-    pauseActive(state, now);
+    // An activity labels the chunk that just ended. Absent means "stepping away",
+    // which leaves it unlabelled so it can be attributed later.
+    const activity = (body?.activity as string | undefined)?.trim() || undefined;
+    pauseActive(state, now, activity);
   } else {
     return NextResponse.json({ error: `unknown action: ${action}` }, { status: 400 });
   }
