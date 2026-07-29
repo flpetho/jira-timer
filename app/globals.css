@@ -80,8 +80,8 @@ html, body {
 }
 
 .key { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
-/* A completed story JIRA still reports as open work. */
-.chip-open {
+/* Time already sent to JIRA for a story that's back in the iteration list. */
+.chip-logged {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -90,8 +90,8 @@ html, body {
   padding: 2px 7px;
   border-radius: var(--radius);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.row.reopened { border-left: 2px solid var(--warn); }
 
 .status-chip {
   font-size: 10px;

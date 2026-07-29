@@ -189,15 +189,17 @@ export default function Home() {
   const active = activeKey ? stories[activeKey] ?? null : null;
   const issues = issuesData?.issues ?? [];
   const activeDesc = active ? issues.find((i) => i.key === active.key)?.description ?? null : null;
-  const upNext = issues
-    .filter((i) => i.key !== activeKey && !stories[i.key]?.doneAt)
-    .map((i) => ({ issue: i, timer: stories[i.key] ?? null }));
-  const completed = Object.values(stories)
-    .filter((s) => s.doneAt != null)
-    .sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0));
-  // /api/stories only returns unresolved issues, so anything here that we consider
-  // done is still open work as far as JIRA is concerned.
+  // JIRA decides where a story sits. /api/stories returns only unresolved issues,
+  // so anything it lists is live work — even if we logged time against it earlier.
   const openIssues = new Map(issues.map((i) => [i.key, i]));
+  const upNext = issues
+    .filter((i) => i.key !== activeKey)
+    .map((i) => ({ issue: i, timer: stories[i.key] ?? null }));
+  // Completed means logged AND no longer open in JIRA. A story reopened there
+  // moves back up to the iteration list rather than lingering down here.
+  const completed = Object.values(stories)
+    .filter((s) => s.doneAt != null && !openIssues.has(s.key))
+    .sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0));
 
   // Board picker: filter the (often hundreds of) boards, cap the list, but always
   // keep the current selection visible as an option.
@@ -346,6 +348,13 @@ export default function Home() {
                 <div className="line1">
                   <span className="key">{issue.key}</span>
                   <span className="status-chip">{issue.status}</span>
+                  {/* Time already in JIRA from an earlier Done. Explains why a further
+                      Done logs less than the clock shows — only new time is sent. */}
+                  {t?.loggedSeconds ? (
+                    <span className="chip-logged" title="Already logged to JIRA">
+                      {formatDurationShort(t.loggedSeconds)} logged
+                    </span>
+                  ) : null}
                   <span className="assignee">{issue.assignee ?? 'Unassigned'}</span>
                 </div>
                 <div className="summary" title={issue.summary}>
@@ -372,38 +381,22 @@ export default function Home() {
       {completed.length > 0 && (
         <>
           <div className="section-label">Completed</div>
-          {completed.map((s) => {
-            // JIRA still lists it as open work. Either it was reopened there, or it
-            // was logged without transitioning. Either way, say so rather than guess.
-            const stillOpen = openIssues.get(s.key) ?? null;
-            return (
-              <div className={`row ${stillOpen ? 'reopened' : ''}`} key={s.key}>
-                <div className="grow">
-                  <div className="line1">
-                    <span className="key">{s.key}</span>
-                    <span className="status-chip">{stillOpen?.status ?? s.status}</span>
-                    {stillOpen && <span className="chip-open">Still open in JIRA</span>}
-                    <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
-                  </div>
-                  <div className="summary" title={s.summary}>
-                    {s.summary}
-                  </div>
-                  <MetaLine estimate={s.estimateSeconds} actual={s.loggedSeconds ?? 0} />
+          {completed.map((s) => (
+            <div className="row" key={s.key}>
+              <div className="grow">
+                <div className="line1">
+                  <span className="key">{s.key}</span>
+                  <span className="status-chip">{s.status}</span>
+                  <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
                 </div>
-                <span className="prior">{formatDurationShort(s.loggedSeconds ?? 0)} logged</span>
-                {stillOpen && (
-                  <button
-                    className="small"
-                    onClick={() => start(stillOpen)}
-                    disabled={busy !== null}
-                    title="Put this back in play. Only new time gets logged."
-                  >
-                    Resume
-                  </button>
-                )}
+                <div className="summary" title={s.summary}>
+                  {s.summary}
+                </div>
+                <MetaLine estimate={s.estimateSeconds} actual={s.loggedSeconds ?? 0} />
               </div>
-            );
-          })}
+              <span className="prior">{formatDurationShort(s.loggedSeconds ?? 0)} logged</span>
+            </div>
+          ))}
         </>
       )}
 
