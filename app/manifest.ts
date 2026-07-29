@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { ICON_URL } from './icon-version';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
@@ -10,8 +11,8 @@ export default function manifest(): MetadataRoute.Manifest {
     background_color: '#0b0e14',
     theme_color: '#0b0e14',
     icons: [
-      { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-      { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
+      { src: ICON_URL, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+      { src: ICON_URL, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
     ],
   };
 }

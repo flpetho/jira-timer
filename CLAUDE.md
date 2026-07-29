@@ -70,6 +70,11 @@ overwrite the build the launchd agent is serving; it then 500s with
 page. `next.config.js` sends dev to `.next-dev` to prevent exactly that. Don't
 collapse the two.
 
+**Changing the icon needs a version bump.** Browsers store favicons separately
+from the HTTP cache and a hard reload won't clear it, so editing
+`public/icon.svg` alone leaves the old artwork on screen. Bump `ICON_VERSION` in
+`app/icon-version.ts`; both the `<link rel="icon">` and the manifest read from it.
+
 **State lives outside the repo**, at `~/.jira-timer/state.json`. It's the user's
 real tracked time. Never overwrite it while testing — set `HOME` to a temp dir to
 get an isolated state file instead.
