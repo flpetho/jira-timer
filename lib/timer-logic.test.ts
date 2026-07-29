@@ -6,6 +6,7 @@ import {
   markDone,
   pendingLogSeconds,
   unloggedByActivity,
+  unloggedBreakdown,
   normalizeState,
 } from './timer-logic';
 import type { TimerState } from './types';
@@ -151,6 +152,39 @@ describe('activity attribution', () => {
     expect(unloggedByActivity(s.stories['TEST-1'], 35 * M)).toEqual([
       { activity: 'Building', seconds: 15 * 60 },
     ]);
+  });
+});
+
+describe('unloggedBreakdown (display)', () => {
+  it('pins the running chunk first and keeps it out of Unlabelled', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 25 * M); // stopped without a label — a real gap
+    s = startTimer(s, issue('TEST-1'), 30 * M); // still running
+    const rows = unloggedBreakdown(s.stories['TEST-1'], 45 * M);
+    // Running first regardless of when its segment was opened.
+    expect(rows[0]).toEqual({ activity: 'Running', seconds: 15 * 60, running: true });
+    expect(rows.slice(1)).toEqual([
+      { activity: 'Meeting', seconds: 10 * 60 },
+      { activity: 'Unlabelled', seconds: 5 * 60 },
+    ]);
+  });
+
+  it('omits the running row when nothing is running', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    const rows = unloggedBreakdown(s.stories['TEST-1'], 20 * M);
+    expect(rows.some((r) => r.running)).toBe(false);
+  });
+
+  it('keeps Running out of what gets logged', () => {
+    // The worklog for an open, unattributed chunk must say Unlabelled — by the
+    // time anything is logged the chunk is closed and genuinely unattributed.
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    const forLogging = unloggedByActivity(s.stories['TEST-1'], 30 * M);
+    expect(forLogging).toEqual([{ activity: 'Unlabelled', seconds: 30 * 60 }]);
+    expect(forLogging.some((g) => g.activity === 'Running')).toBe(false);
   });
 });
 

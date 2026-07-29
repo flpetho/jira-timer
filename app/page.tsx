@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { activeSeconds, formatClock, formatDurationShort, isRunning } from '@/lib/time';
 import type { MyselfResult } from '@/lib/conn';
 import { UNLABELLED } from '@/lib/activities';
-import { unloggedByActivity } from '@/lib/timer-logic';
+import { unloggedBreakdown } from '@/lib/timer-logic';
 import SetupScreen from './SetupScreen';
 import type {
   JiraBoard,
@@ -673,15 +673,15 @@ export default function Home() {
  * is in JIRA, the "in JIRA" figure covers it and repeating it here would double up.
  */
 function ActivityBreakdown({ story, now }: { story: StoryTimer; now: number }) {
-  const groups = unloggedByActivity(story, now);
+  const groups = unloggedBreakdown(story, now);
   if (groups.length === 0) return null;
-  // A single unlabelled bucket is just the clock restated.
-  if (groups.length === 1 && groups[0].activity === UNLABELLED) return null;
+  // A lone row restates the clock directly above it.
+  if (groups.length === 1) return null;
   const total = groups.reduce((s, g) => s + g.seconds, 0);
   return (
     <div className="breakdown">
       {groups.map((g) => (
-        <div className="breakdown-row" key={g.activity}>
+        <div className={`breakdown-row${g.running ? ' is-running' : ''}`} key={g.activity}>
           <span className={g.activity === UNLABELLED ? 'faint' : 'muted'}>{g.activity}</span>
           <span className="bar" style={{ width: `${Math.round((g.seconds / total) * 100)}%` }} />
           {/* Durations format to the minute, so a chunk under one would read "0m". */}

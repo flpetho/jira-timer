@@ -202,6 +202,14 @@ html, body {
   border-radius: 2px;
 }
 .breakdown-row b { font-variant-numeric: tabular-nums; font-weight: 600; }
+/* The row still accruing: brighter label, solid bar, gently pulsing so it reads
+   as live rather than just another entry. */
+.breakdown-row.is-running span:first-child { color: var(--text); }
+.breakdown-row.is-running .bar { opacity: 0.85; animation: jt-pulse-bar 2.4s ease-in-out infinite; }
+@keyframes jt-pulse-bar { 0%, 100% { opacity: 0.85; } 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) {
+  .breakdown-row.is-running .bar { animation: none; }
+}
 
 /* Up-next / completed rows */
 .row {

@@ -1,6 +1,6 @@
 import type { TimerState, StoryTimer, JiraIssue } from './types';
 import { roundSeconds } from './time';
-import { UNLABELLED, type ActivityRaw } from './activities';
+import { UNLABELLED, RUNNING, type ActivityRaw } from './activities';
 
 export type IssueMeta = Pick<JiraIssue, 'key' | 'summary' | 'status' | 'assignee' | 'estimateSeconds'>;
 
@@ -52,21 +52,55 @@ export function pauseActive(state: TimerState, now: number, activity?: string): 
   return state;
 }
 
+export interface ActivityRow extends ActivityRaw {
+  /** True for the chunk still accruing. Display concern only. */
+  running?: boolean;
+}
+
 /**
- * Unlogged tracked time per activity, in first-seen order. Segments already
- * covered by a worklog are excluded, so a second Done only breaks down new work.
+ * Unlogged tracked time per activity. Segments already covered by a worklog are
+ * excluded, so a second Done only breaks down new work.
+ *
+ * `splitRunning` separates the open segment into its own row, pinned first — the
+ * display wants it distinguished and in a fixed position, while logging wants it
+ * folded into Unlabelled like any other unattributed chunk.
  */
-export function unloggedByActivity(story: StoryTimer, now: number): ActivityRaw[] {
+function collectUnlogged(story: StoryTimer, now: number, splitRunning: boolean): ActivityRow[] {
   const totals = new Map<string, number>();
+  let runningSeconds = 0;
+
   for (const seg of story.segments) {
     if (seg.logged) continue;
-    const end = seg.end ?? now;
-    const seconds = Math.max(0, Math.round((end - seg.start) / 1000));
+    const isOpen = seg.end === null;
+    const seconds = Math.max(0, Math.round(((seg.end ?? now) - seg.start) / 1000));
     if (seconds <= 0) continue;
+
+    if (splitRunning && isOpen) {
+      runningSeconds += seconds;
+      continue;
+    }
     const name = seg.activity?.trim() || UNLABELLED;
     totals.set(name, (totals.get(name) ?? 0) + seconds);
   }
-  return [...totals.entries()].map(([activity, seconds]) => ({ activity, seconds }));
+
+  // First-seen order for the rest, so labelling something doesn't reshuffle the list.
+  const rows: ActivityRow[] = [...totals.entries()].map(([activity, seconds]) => ({
+    activity,
+    seconds,
+  }));
+  return runningSeconds > 0
+    ? [{ activity: RUNNING, seconds: runningSeconds, running: true }, ...rows]
+    : rows;
+}
+
+/** For logging: the open chunk counts as Unlabelled, same as any unattributed time. */
+export function unloggedByActivity(story: StoryTimer, now: number): ActivityRaw[] {
+  return collectUnlogged(story, now, false);
+}
+
+/** For display: the running chunk is its own row, always first. */
+export function unloggedBreakdown(story: StoryTimer, now: number): ActivityRow[] {
+  return collectUnlogged(story, now, true);
 }
 
 /**

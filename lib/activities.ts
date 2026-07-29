@@ -8,8 +8,16 @@
 
 export const DEFAULT_ACTIVITIES = ['Meeting', 'Building', 'Testing', 'Review', 'Other'] as const;
 
-/** Shown for time tracked before an activity was chosen, or paused without one. */
+/** Time that was stopped without choosing an activity — a real gap to attribute. */
 export const UNLABELLED = 'Unlabelled';
+
+/**
+ * The chunk accruing right now. Display-only: it isn't unattributed by choice, it
+ * just hasn't been stopped yet, so it shouldn't sit in the same bucket as time
+ * you paused and left unlabelled. Worklogs never use this name — by the time
+ * anything is logged, the chunk is closed and genuinely unlabelled.
+ */
+export const RUNNING = 'Running';
 
 /**
  * Parse JIRA_ACTIVITIES. Unset falls back to the default set; an explicitly blank
