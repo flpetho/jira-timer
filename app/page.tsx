@@ -195,11 +195,20 @@ export default function Home() {
   const upNext = issues
     .filter((i) => i.key !== activeKey)
     .map((i) => ({ issue: i, timer: stories[i.key] ?? null }));
-  // Completed means logged AND no longer open in JIRA. A story reopened there
-  // moves back up to the iteration list rather than lingering down here.
+  // Completed = time we recorded, for work JIRA no longer lists as open. Pressing
+  // Done is deliberately NOT required: resolving a story in JIRA without it would
+  // otherwise drop the story out of both lists and hide the tracked time entirely.
+  //
+  // Caveat: "no longer open" is inferred from the currently displayed issues, which
+  // are scoped to the selected board and the assignee toggle — so switching boards
+  // can surface a story that is still open elsewhere. Resolving that properly needs
+  // a per-story JIRA lookup.
+  const hasRecordedTime = (s: StoryTimer) => live(s) >= 60 || (s.loggedSeconds ?? 0) > 0;
+  const lastActivity = (s: StoryTimer) =>
+    s.doneAt ?? s.segments[s.segments.length - 1]?.end ?? 0;
   const completed = Object.values(stories)
-    .filter((s) => s.doneAt != null && !openIssues.has(s.key))
-    .sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0));
+    .filter((s) => hasRecordedTime(s) && !openIssues.has(s.key))
+    .sort((a, b) => lastActivity(b) - lastActivity(a));
 
   // Board picker: filter the (often hundreds of) boards, cap the list, but always
   // keep the current selection visible as an option.
@@ -381,24 +390,40 @@ export default function Home() {
       {completed.length > 0 && (
         <>
           <div className="section-label">Completed</div>
-          {completed.map((s) => (
-            <div className="row" key={s.key}>
-              <div className="grow">
-                <div className="line1">
-                  <span className="key">{s.key}</span>
-                  <span className="status-chip">{s.status}</span>
-                  <TimeChips tracked={live(s)} logged={s.loggedSeconds} />
-                  <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
+          {completed.map((s) => {
+            // Finished with time the timer measured but never sent. Worth calling
+            // out here, because this row is the only place it's still visible.
+            const unlogged = (s.loggedSeconds ?? 0) === 0 && live(s) >= 60;
+            return (
+              <div className="row" key={s.key}>
+                <div className="grow">
+                  <div className="line1">
+                    <span className="key">{s.key}</span>
+                    <span className="status-chip">{s.status}</span>
+                    <TimeChips tracked={live(s)} logged={s.loggedSeconds} />
+                    {unlogged && <span className="chip-unlogged">Not logged to JIRA</span>}
+                    <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
+                  </div>
+                  <div className="summary" title={s.summary}>
+                    {s.summary}
+                  </div>
+                  {/* Compared against tracked time, matching the iteration rows —
+                      previously this row measured overrun against logged time instead. */}
+                  <MetaLine estimate={s.estimateSeconds} actual={live(s)} />
                 </div>
-                <div className="summary" title={s.summary}>
-                  {s.summary}
-                </div>
-                {/* Compared against tracked time, matching the iteration rows —
-                    previously this row measured overrun against logged time instead. */}
-                <MetaLine estimate={s.estimateSeconds} actual={live(s)} />
+                {unlogged && (
+                  <button
+                    className="small"
+                    onClick={() => setDoneFor(s)}
+                    disabled={busy !== null}
+                    title="Send this tracked time to JIRA as a worklog"
+                  >
+                    Log time
+                  </button>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </>
       )}
 
