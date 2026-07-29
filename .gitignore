@@ -8,3 +8,6 @@ out
 next-env.d.ts
 tsconfig.tsbuildinfo
 .next-dev
+
+# Personal progress notes — deliberately not published.
+notes/
