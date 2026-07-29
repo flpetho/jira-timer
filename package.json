@@ -1,0 +1,26 @@
+{
+  "name": "jira-timer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small local widget: read my assigned JIRA stories, track active time against one, then log hours + transition status back to JIRA.",
+  "scripts": {
+    "dev": "next dev -p 4100",
+    "build": "next build",
+    "start": "next start -p 4100",
+    "app": "sh scripts/app.sh",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "^14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "typescript": "^5",
+    "vitest": "^2"
+  }
+}
