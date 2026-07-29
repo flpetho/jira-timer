@@ -1,9 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    Glyph is kept inside the central 80% so it survives the circular/squircle crop
+    an OS applies to a maskable PWA icon. The dark plate is load-bearing: a
+    white-only glyph on transparency disappears in light-mode browser tabs.
+  -->
   <rect width="512" height="512" rx="96" fill="#0b0e14"/>
-  <circle cx="256" cy="288" r="150" fill="none" stroke="#7dd3fc" stroke-width="28"/>
-  <rect x="212" y="40" width="88" height="42" rx="10" fill="#7dd3fc"/>
-  <rect x="244" y="70" width="24" height="40" fill="#7dd3fc"/>
-  <line x1="256" y1="288" x2="256" y2="192" stroke="#7dd3fc" stroke-width="26" stroke-linecap="round"/>
-  <line x1="256" y1="288" x2="332" y2="312" stroke="#e6e9ef" stroke-width="20" stroke-linecap="round"/>
-  <circle cx="256" cy="288" r="18" fill="#e6e9ef"/>
+  <g fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round">
+    <circle cx="256" cy="256" r="130"/>
+    <line x1="256" y1="256" x2="256" y2="168"/>
+    <line x1="256" y1="256" x2="322" y2="282"/>
+  </g>
+  <circle cx="256" cy="256" r="17" fill="#ffffff"/>
 </svg>
