@@ -80,18 +80,20 @@ html, body {
 }
 
 .key { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
-/* Time already sent to JIRA for a story that's back in the iteration list. */
+/* Time badges. Neutral = measured locally; yellow = already in JIRA. Same shape
+   so they read as one family, different colour so they can't be confused. */
+.chip-tracked,
 .chip-logged {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #fcd34d;
-  background: rgba(251, 191, 36, 0.14);
   padding: 2px 7px;
   border-radius: var(--radius);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+.chip-tracked { color: var(--accent); background: rgba(125, 211, 252, 0.13); }
+.chip-logged { color: #fcd34d; background: rgba(251, 191, 36, 0.14); }
 
 .status-chip {
   font-size: 10px;
@@ -138,7 +140,6 @@ html, body {
 .row .grow { flex: 1; min-width: 0; }
 .row .line1 { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .row .summary { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row .prior { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 
 /* Buttons */
 button {

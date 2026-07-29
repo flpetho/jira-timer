@@ -291,6 +291,12 @@ export default function Home() {
           <div className="active-top">
             <span className="key">{active.key}</span>
             <span className="status-chip">{active.status}</span>
+            {/* No tracked chip here — the clock below is the tracked figure. */}
+            {active.loggedSeconds ? (
+              <span className="chip-logged" title="Already sent to JIRA as a worklog">
+                {formatDurationShort(active.loggedSeconds)} logged
+              </span>
+            ) : null}
             <span className="assignee">{active.assignee ?? 'Unassigned'}</span>
           </div>
           <div className="summary">{active.summary}</div>
@@ -348,13 +354,7 @@ export default function Home() {
                 <div className="line1">
                   <span className="key">{issue.key}</span>
                   <span className="status-chip">{issue.status}</span>
-                  {/* Time already in JIRA from an earlier Done. Explains why a further
-                      Done logs less than the clock shows — only new time is sent. */}
-                  {t?.loggedSeconds ? (
-                    <span className="chip-logged" title="Already logged to JIRA">
-                      {formatDurationShort(t.loggedSeconds)} logged
-                    </span>
-                  ) : null}
+                  <TimeChips tracked={prior} logged={t?.loggedSeconds ?? null} />
                   <span className="assignee">{issue.assignee ?? 'Unassigned'}</span>
                 </div>
                 <div className="summary" title={issue.summary}>
@@ -387,14 +387,16 @@ export default function Home() {
                 <div className="line1">
                   <span className="key">{s.key}</span>
                   <span className="status-chip">{s.status}</span>
+                  <TimeChips tracked={live(s)} logged={s.loggedSeconds} />
                   <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
                 </div>
                 <div className="summary" title={s.summary}>
                   {s.summary}
                 </div>
-                <MetaLine estimate={s.estimateSeconds} actual={s.loggedSeconds ?? 0} />
+                {/* Compared against tracked time, matching the iteration rows —
+                    previously this row measured overrun against logged time instead. */}
+                <MetaLine estimate={s.estimateSeconds} actual={live(s)} />
               </div>
-              <span className="prior">{formatDurationShort(s.loggedSeconds ?? 0)} logged</span>
             </div>
           ))}
         </>
@@ -483,6 +485,32 @@ function Description({
   );
 }
 
+/**
+ * The two time facts a story can carry, always labelled so they can't be misread
+ * as each other: what the timer measured here, and how much of it JIRA has.
+ * They diverge legitimately — rounding, or more work after a first Done.
+ */
+function TimeChips({ tracked, logged }: { tracked: number; logged: number | null }) {
+  const showTracked = tracked >= 60; // below a minute it would render "0m"
+  const loggedSecs = logged ?? 0;
+  if (!showTracked && loggedSecs <= 0) return null;
+  return (
+    <>
+      {showTracked && (
+        <span className="chip-tracked" title="Measured by the timer on this machine">
+          {formatDurationShort(tracked)} tracked
+        </span>
+      )}
+      {loggedSecs > 0 && (
+        <span className="chip-logged" title="Already sent to JIRA as a worklog">
+          {formatDurationShort(loggedSecs)} logged
+        </span>
+      )}
+    </>
+  );
+}
+
+/** Estimate, plus an overrun callout. The amounts themselves live in TimeChips. */
 function MetaLine({ estimate, actual }: { estimate: number | null; actual: number }) {
   const over = estimate != null && actual > estimate;
   return (
@@ -490,8 +518,12 @@ function MetaLine({ estimate, actual }: { estimate: number | null; actual: numbe
       <span className="est">
         {estimate != null ? `est ${formatDurationShort(estimate)}` : 'no estimate'}
       </span>
-      <span>·</span>
-      <span className={over ? 'act over' : 'act'}>{formatDurationShort(actual)} actual</span>
+      {over && (
+        <>
+          <span>·</span>
+          <span className="act over">{formatDurationShort(actual - estimate)} over</span>
+        </>
+      )}
     </div>
   );
 }
