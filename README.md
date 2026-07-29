@@ -130,9 +130,15 @@ npm run build
 sh scripts/service.sh start     # start|stop|restart|status|update
 ```
 
-Run `sh scripts/service.sh update` after any code change — it rebuilds and
-restarts the agent. Note that the always-on service reads `.env.local` at
-startup, so credential changes need that restart, unlike `npm run dev`.
+After any code or credential change the agent needs rebuilding and restarting,
+because unlike `npm run dev` it reads `.env.local` only at startup. Easiest is to
+ask Claude Code:
+
+```
+> restart the JIRA timer so it picks up my new credentials
+```
+
+Or do it yourself with `sh scripts/service.sh update`.
 
 ## Tests
 

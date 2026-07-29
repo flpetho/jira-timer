@@ -7,6 +7,9 @@ import type { TimerState } from '@/lib/types';
 
 const TOKEN_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens';
 
+/** Phrased as something you'd actually type at Claude Code, not as a command. */
+const CLAUDE_RESTART_PROMPT = 'restart the JIRA timer so it picks up my new credentials';
+
 /** What to show for each var in the copy block. Matches .env.example. */
 const SAMPLE: Record<CredVar, string> = {
   JIRA_BASE_URL: 'https://your-org.atlassian.net',
@@ -38,17 +41,20 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function EnvBlock({ vars }: { vars: readonly CredVar[] }) {
-  const text = envBlock(vars);
+function CopyBlock({ label, text }: { label: string; text: string }) {
   return (
     <div className="copy-block">
       <div className="copy-block-head">
-        <span className="faint">.env.local</span>
+        <span className="faint">{label}</span>
         <CopyButton text={text} />
       </div>
       <pre>{text}</pre>
     </div>
   );
+}
+
+function EnvBlock({ vars }: { vars: readonly CredVar[] }) {
+  return <CopyBlock label=".env.local" text={envBlock(vars)} />;
 }
 
 /** How to make the server pick up new credentials. Differs by how it's running. */
@@ -64,10 +70,17 @@ function ApplyStep({ devMode }: { devMode: boolean }) {
       </li>
     );
   }
+  // The always-on build reads credentials at startup, so it needs a restart.
+  // Most people meeting this screen have Claude Code open already, so asking it
+  // beats switching to a terminal — but the command stays for when it isn't.
   return (
     <li>
-      <b>Restart the app</b> so it picks up the new values:
-      <pre className="cmd">sh scripts/service.sh update</pre>
+      <b>Ask Claude Code to apply it.</b>{' '}
+      <span className="muted">This build reads credentials at startup, so it needs a restart.</span>
+      <CopyBlock label="ask Claude" text={CLAUDE_RESTART_PROMPT} />
+      <div className="hint faint">
+        Rather do it yourself? <code>sh scripts/service.sh update</code>
+      </div>
     </li>
   );
 }
