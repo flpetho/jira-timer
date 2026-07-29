@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { emptyState, startTimer, pauseActive, markDone } from './timer-logic';
+import { emptyState, startTimer, pauseActive, markDone, pendingLogSeconds } from './timer-logic';
 import { activeSeconds } from './time';
 import type { IssueMeta } from './timer-logic';
 
@@ -68,5 +68,54 @@ describe('markDone', () => {
     s = markDone(s, 'TEST-67', 30 * M, '1', 300);
     expect(s.activeKey).toBe('TEST-68'); // 68 still running
     expect(s.stories['TEST-67'].doneAt).toBe(30 * M);
+  });
+
+  it('accumulates logged time across repeated Done presses', () => {
+    let s = startTimer(emptyState(), issue('TEST-67'), 0);
+    s = markDone(s, 'TEST-67', 10 * M, 'w1', 600); // logged 10m
+    s = startTimer(s, issue('TEST-67'), 20 * M); // reopened, worked more
+    s = markDone(s, 'TEST-67', 30 * M, 'w2', 600); // logged 10m more
+    // JIRA now holds two worklogs totalling 20m, so our record must agree.
+    expect(s.stories['TEST-67'].loggedSeconds).toBe(1200);
+  });
+});
+
+describe('reopening a completed story', () => {
+  it('clears doneAt so it is back in play', () => {
+    let s = startTimer(emptyState(), issue('TEST-67'), 0);
+    s = markDone(s, 'TEST-67', 10 * M, 'w1', 600);
+    expect(s.stories['TEST-67'].doneAt).toBe(10 * M);
+    s = startTimer(s, issue('TEST-67'), 20 * M);
+    expect(s.stories['TEST-67'].doneAt).toBeNull();
+    expect(s.activeKey).toBe('TEST-67');
+  });
+
+  it('keeps the already-logged total, so resuming cannot double-log', () => {
+    // The worklog is already in JIRA. Forgetting it here would re-send that time.
+    let s = startTimer(emptyState(), issue('TEST-67'), 0);
+    s = markDone(s, 'TEST-67', 10 * M, 'w1', 600);
+    s = startTimer(s, issue('TEST-67'), 20 * M);
+    expect(s.stories['TEST-67'].loggedSeconds).toBe(600);
+  });
+});
+
+describe('pendingLogSeconds', () => {
+  it('is the whole rounded total when nothing was logged yet', () => {
+    expect(pendingLogSeconds(20 * 60, 0, 5)).toBe(20 * 60);
+  });
+
+  it('subtracts what JIRA already has', () => {
+    // 20m of work, 5m already logged -> only 15m is new.
+    expect(pendingLogSeconds(20 * 60, 5 * 60, 5)).toBe(15 * 60);
+  });
+
+  it('is zero or less when no new time has accrued', () => {
+    expect(pendingLogSeconds(5 * 60, 5 * 60, 5)).toBe(0);
+    expect(pendingLogSeconds(23, 5 * 60, 5)).toBe(0); // 23s rounds up to the 5m already logged
+  });
+
+  it('rounds the total, not the delta, so repeated logs stay consistent', () => {
+    // 12m actual rounds to 10m; 5m already logged leaves 5m new, not 7m.
+    expect(pendingLogSeconds(12 * 60, 5 * 60, 5)).toBe(5 * 60);
   });
 });

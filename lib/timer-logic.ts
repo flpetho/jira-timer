@@ -1,4 +1,5 @@
 import type { TimerState, StoryTimer, JiraIssue } from './types';
+import { roundSeconds } from './time';
 
 export type IssueMeta = Pick<JiraIssue, 'key' | 'summary' | 'status' | 'assignee' | 'estimateSeconds'>;
 
@@ -48,14 +49,34 @@ export function startTimer(state: TimerState, issue: IssueMeta, now: number): Ti
   pauseActive(state, now);
   const story = ensureStory(state, issue);
   story.doneAt = null; // resuming un-completes
-  story.worklogId = null;
-  story.loggedSeconds = null;
+  // loggedSeconds and worklogId are deliberately KEPT. Any worklog we already
+  // pushed still exists in JIRA, so forgetting it here would re-send that time
+  // on the next Done. pendingLogSeconds() subtracts it instead.
   story.segments.push({ start: now, end: null });
   state.activeKey = issue.key;
   return state;
 }
 
-/** Mark a story done: close its segment(s), record the pushed worklog + logged seconds. */
+/**
+ * How many seconds to send to JIRA now: the rounded total minus whatever we've
+ * already logged. Rounding the total rather than the delta keeps repeated logs
+ * consistent with what a single log at the end would have produced.
+ *
+ * Zero or negative means there's nothing new to log.
+ */
+export function pendingLogSeconds(
+  activeSecs: number,
+  alreadyLogged: number,
+  roundMinutes: number,
+): number {
+  return roundSeconds(activeSecs, roundMinutes) - alreadyLogged;
+}
+
+/**
+ * Mark a story done: close its segment(s) and record the worklog we just pushed.
+ * `loggedSeconds` accumulates, because JIRA keeps every worklog — the story's
+ * logged total is the sum, not the size of the latest one.
+ */
 export function markDone(
   state: TimerState,
   key: string,
@@ -74,7 +95,7 @@ export function markDone(
   if (story) {
     story.doneAt = now;
     story.worklogId = worklogId;
-    story.loggedSeconds = loggedSeconds;
+    story.loggedSeconds = (story.loggedSeconds ?? 0) + loggedSeconds;
   }
   return state;
 }

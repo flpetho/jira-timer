@@ -40,6 +40,8 @@ export default function Home() {
   const [boardFilter, setBoardFilter] = useState('');
   const [mineOnly, setMineOnly] = useState<boolean>(true);
   const [hydrated, setHydrated] = useState(false);
+  const [boardsLoading, setBoardsLoading] = useState(false);
+  const [issuesLoading, setIssuesLoading] = useState(false);
   const [now, setNow] = useState<number>(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
   const [doneFor, setDoneFor] = useState<StoryTimer | null>(null);
@@ -84,7 +86,10 @@ export default function Home() {
     }
   }, []);
 
+  // Boards can take several seconds: JIRA pages them 50 at a time, so an account
+  // with hundreds of boards costs one request per page.
   const loadBoards = useCallback(async () => {
+    setBoardsLoading(true);
     try {
       const res = await fetch('/api/boards', { cache: 'no-store' });
       const d = await res.json();
@@ -94,15 +99,20 @@ export default function Home() {
       setSelectedBoard((prev) => prev ?? d.defaultBoardId ?? null);
     } catch {
       /* keep last */
+    } finally {
+      setBoardsLoading(false);
     }
   }, []);
 
   const loadIssues = useCallback(async (board: number, mine: boolean) => {
+    setIssuesLoading(true);
     try {
       const res = await fetch(`/api/stories?board=${board}&mine=${mine}`, { cache: 'no-store' });
       setIssuesData(await res.json());
     } catch {
       /* keep last */
+    } finally {
+      setIssuesLoading(false);
     }
   }, []);
 
@@ -129,15 +139,17 @@ export default function Home() {
     if (connected) loadBoards();
   }, [connected, loadBoards]);
 
-  // Fetch (and poll) the selected board's current iteration.
+  // Fetch (and poll) the selected board's current iteration. `connected` is a
+  // dependency on purpose: without it a reconnect wouldn't refetch, leaving the
+  // iteration empty until the next 30s tick while local stories showed instantly.
   useEffect(() => {
-    if (!hydrated || selectedBoard == null) return;
+    if (!hydrated || selectedBoard == null || !connected) return;
     localStorage.setItem('jt.board', String(selectedBoard));
     localStorage.setItem('jt.mine', String(mineOnly));
     loadIssues(selectedBoard, mineOnly);
     const t = setInterval(() => loadIssues(selectedBoard, mineOnly), 30_000);
     return () => clearInterval(t);
-  }, [hydrated, selectedBoard, mineOnly, loadIssues]);
+  }, [hydrated, selectedBoard, mineOnly, loadIssues, connected]);
 
   // 1s clock tick for the live readout.
   useEffect(() => {
@@ -183,6 +195,9 @@ export default function Home() {
   const completed = Object.values(stories)
     .filter((s) => s.doneAt != null)
     .sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0));
+  // /api/stories only returns unresolved issues, so anything here that we consider
+  // done is still open work as far as JIRA is concerned.
+  const openIssues = new Map(issues.map((i) => [i.key, i]));
 
   // Board picker: filter the (often hundreds of) boards, cap the list, but always
   // keep the current selection visible as an option.
@@ -200,7 +215,7 @@ export default function Home() {
   if (!connected) {
     return (
       <div className="wrap">
-        <Header me={me} connected={connected} />
+        <Header me={me} connected={connected} syncing={false} />
         <SetupScreen
           me={me}
           timer={timer}
@@ -218,7 +233,7 @@ export default function Home() {
 
   return (
     <div className="wrap">
-      <Header me={me} connected={connected} />
+      <Header me={me} connected={connected} syncing={boardsLoading || issuesLoading} />
 
       {issuesData?.jiraError && <div className="banner bad">JIRA error: {issuesData.jiraError}</div>}
 
@@ -236,9 +251,15 @@ export default function Home() {
           onChange={(e) => setSelectedBoard(e.target.value ? Number(e.target.value) : null)}
           disabled={!connected || boards.length === 0}
         >
-          {selectedBoard == null && <option value="">Pick a board…</option>}
+          {selectedBoard == null && !boardsLoading && <option value="">Pick a board…</option>}
           {boards.length === 0 && (
-            <option value="">{connected ? 'No boards found' : 'Connect to load boards'}</option>
+            <option value="">
+              {boardsLoading
+                ? 'Loading boards from JIRA…'
+                : connected
+                  ? 'No boards found'
+                  : 'Connect to load boards'}
+            </option>
           )}
           {selectOptions.map((b) => (
             <option key={b.id} value={b.id}>
@@ -301,9 +322,11 @@ export default function Home() {
       <div className="iteration">
         <span className="lbl">{issuesData?.sprint ? 'Current iteration' : 'Open issues'}</span>
         {issuesData?.sprint && <span className="name">{issuesData.sprint.name}</span>}
+        {/* Refreshing over data we already show: a quiet spinner, no layout shift. */}
+        {issuesLoading && issuesData && <span className="spinner sm" aria-label="Refreshing" />}
       </div>
       {!issuesData ? (
-        <div className="spin">Loading…</div>
+        <Loading label="Loading stories from JIRA…" />
       ) : upNext.length === 0 ? (
         <div className="empty">
           {!connected
@@ -349,22 +372,38 @@ export default function Home() {
       {completed.length > 0 && (
         <>
           <div className="section-label">Completed</div>
-          {completed.map((s) => (
-            <div className="row" key={s.key}>
-              <div className="grow">
-                <div className="line1">
-                  <span className="key">{s.key}</span>
-                  <span className="status-chip">{s.status}</span>
-                  <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
+          {completed.map((s) => {
+            // JIRA still lists it as open work. Either it was reopened there, or it
+            // was logged without transitioning. Either way, say so rather than guess.
+            const stillOpen = openIssues.get(s.key) ?? null;
+            return (
+              <div className={`row ${stillOpen ? 'reopened' : ''}`} key={s.key}>
+                <div className="grow">
+                  <div className="line1">
+                    <span className="key">{s.key}</span>
+                    <span className="status-chip">{stillOpen?.status ?? s.status}</span>
+                    {stillOpen && <span className="chip-open">Still open in JIRA</span>}
+                    <span className="assignee">{s.assignee ?? 'Unassigned'}</span>
+                  </div>
+                  <div className="summary" title={s.summary}>
+                    {s.summary}
+                  </div>
+                  <MetaLine estimate={s.estimateSeconds} actual={s.loggedSeconds ?? 0} />
                 </div>
-                <div className="summary" title={s.summary}>
-                  {s.summary}
-                </div>
-                <MetaLine estimate={s.estimateSeconds} actual={s.loggedSeconds ?? 0} />
+                <span className="prior">{formatDurationShort(s.loggedSeconds ?? 0)} logged</span>
+                {stillOpen && (
+                  <button
+                    className="small"
+                    onClick={() => start(stillOpen)}
+                    disabled={busy !== null}
+                    title="Put this back in play. Only new time gets logged."
+                  >
+                    Resume
+                  </button>
+                )}
               </div>
-              <span className="prior">{formatDurationShort(s.loggedSeconds ?? 0)} logged</span>
-            </div>
-          ))}
+            );
+          })}
         </>
       )}
 
@@ -383,7 +422,25 @@ export default function Home() {
   );
 }
 
-function Header({ me, connected }: { me: MyselfResult | null; connected: boolean }) {
+/** Animated so a slow JIRA call reads as working rather than stuck. */
+function Loading({ label }: { label: string }) {
+  return (
+    <div className="loading-row" role="status">
+      <span className="spinner" />
+      {label}
+    </div>
+  );
+}
+
+function Header({
+  me,
+  connected,
+  syncing,
+}: {
+  me: MyselfResult | null;
+  connected: boolean;
+  syncing: boolean;
+}) {
   return (
     <div className="header">
       <div className="brand">
@@ -398,8 +455,12 @@ function Header({ me, connected }: { me: MyselfResult | null; connected: boolean
         >
           ↻
         </button>
-        <div className="conn" title={me?.error || ''}>
-          <span className={`dot ${connected ? 'ok' : me ? 'bad' : ''}`} />
+        <div className="conn" title={syncing ? 'Talking to JIRA…' : me?.error || ''}>
+          {/* The dot pulses whenever a JIRA request is in flight, so there's always
+              one place to look to see whether the app is doing something. */}
+          <span
+            className={`dot ${connected ? 'ok' : me ? 'bad' : ''} ${syncing ? 'syncing' : ''}`}
+          />
           {connected ? `Connected as ${me?.name ?? 'JIRA'}` : me ? 'Not connected' : 'Checking…'}
         </div>
       </div>

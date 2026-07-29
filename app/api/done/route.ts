@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readState, writeState } from '@/lib/store';
-import { markDone } from '@/lib/timer-logic';
-import { activeSeconds, roundSeconds } from '@/lib/time';
+import { markDone, pendingLogSeconds } from '@/lib/timer-logic';
+import { activeSeconds } from '@/lib/time';
 import { addWorklog, doTransition } from '@/lib/jira';
 
 export const dynamic = 'force-dynamic';
@@ -17,20 +17,26 @@ export async function POST(req: Request) {
   const state = await readState();
   const story = state.stories[key];
   if (!story) return NextResponse.json({ error: `no timer for ${key}` }, { status: 404 });
-  if (story.worklogId && story.doneAt) {
-    return NextResponse.json(
-      { error: 'already logged', worklogId: story.worklogId, loggedSeconds: story.loggedSeconds },
-      { status: 409 },
-    );
-  }
 
   const now = Date.now();
   const roundMin = parseInt(process.env.TIMER_ROUND_MINUTES || '5', 10);
   const raw = activeSeconds(story.segments, now);
-  const rounded = roundSeconds(raw, roundMin);
+  // Log only what JIRA doesn't have yet. A story can legitimately be logged more
+  // than once — reopened in JIRA, or simply worked on again after a first Done —
+  // and every worklog we pushed still counts, so re-sending it would double up.
+  const alreadyLogged = story.loggedSeconds ?? 0;
+  const rounded = pendingLogSeconds(raw, alreadyLogged, roundMin);
 
   if (rounded <= 0) {
-    return NextResponse.json({ error: 'no active time recorded to log' }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: alreadyLogged
+          ? `No new time to log — ${Math.round(alreadyLogged / 60)}m is already in JIRA.`
+          : 'no active time recorded to log',
+        loggedSeconds: alreadyLogged,
+      },
+      { status: 400 },
+    );
   }
 
   const startedMs = story.segments[0]?.start ?? now;

@@ -80,6 +80,19 @@ html, body {
 }
 
 .key { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+/* A completed story JIRA still reports as open work. */
+.chip-open {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #fcd34d;
+  background: rgba(251, 191, 36, 0.14);
+  padding: 2px 7px;
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+.row.reopened { border-left: 2px solid var(--warn); }
+
 .status-chip {
   font-size: 10px;
   text-transform: uppercase;
@@ -268,6 +281,41 @@ select, textarea, input[type="text"] {
 
 .empty { color: var(--faint); font-size: 13px; padding: 8px 2px; }
 .spin { color: var(--faint); font-size: 13px; }
+
+/* Loading feedback. JIRA calls can take seconds — a board list is one request
+   per 50 boards — so movement is what distinguishes "working" from "stuck". */
+@keyframes jt-spin { to { transform: rotate(360deg); } }
+@keyframes jt-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--hover);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: jt-spin 0.7s linear infinite;
+  flex: none;
+}
+.spinner.sm { width: 10px; height: 10px; border-width: 1.5px; align-self: center; }
+
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 12px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dot.syncing { background: var(--accent); animation: jt-pulse 1.1s ease-in-out infinite; box-shadow: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
+  .dot.syncing { animation: none; opacity: 0.7; }
+}
 
 /* Controls (board picker + filter) */
 .controls { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
