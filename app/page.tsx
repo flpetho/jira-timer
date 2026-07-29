@@ -525,7 +525,7 @@ export default function Home() {
             >
               Pause
             </button>
-            <button className="ok" onClick={() => setDoneFor(active)} disabled={busy !== null}>
+            <button className="primary" onClick={() => setDoneFor(active)} disabled={busy !== null}>
               Done
             </button>
           </div>
@@ -684,7 +684,8 @@ function ActivityBreakdown({ story, now }: { story: StoryTimer; now: number }) {
         <div className="breakdown-row" key={g.activity}>
           <span className={g.activity === UNLABELLED ? 'faint' : 'muted'}>{g.activity}</span>
           <span className="bar" style={{ width: `${Math.round((g.seconds / total) * 100)}%` }} />
-          <b>{formatDurationShort(g.seconds)}</b>
+          {/* Durations format to the minute, so a chunk under one would read "0m". */}
+          <b>{g.seconds < 60 ? '<1m' : formatDurationShort(g.seconds)}</b>
         </div>
       ))}
     </div>
@@ -925,7 +926,7 @@ function DoneDialog({
           <button className="ghost" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
-          <button className="ok" onClick={submit} disabled={submitting}>
+          <button className="primary" onClick={submit} disabled={submitting}>
             {submitting ? 'Logging…' : 'Log to JIRA'}
           </button>
         </div>
