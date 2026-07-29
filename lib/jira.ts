@@ -150,21 +150,94 @@ function descriptionToText(desc: unknown): string | null {
   return text || null;
 }
 
-/** All boards the user can see (Scrum + Kanban), for the board picker. */
+const byName = (a: JiraBoard, b: JiraBoard) => a.name.localeCompare(b.name);
+const toBoard = (b: any): JiraBoard => ({ id: b.id, name: b.name, type: b.type });
+
+/**
+ * Every board the account can see. Kept for the fallback path and for search, but
+ * no longer the default: on a large site this is one request per 50 boards, which
+ * measured ~5s for 405 boards.
+ */
 export async function getBoards(): Promise<JiraBoard[]> {
   const boards: JiraBoard[] = [];
   let startAt = 0;
   // Page through so users with many boards see them all.
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const res = await jira(`/rest/agile/1.0/board?maxResults=50&startAt=${startAt}`);
     if (!res.ok) throw new Error(`Get boards failed: ${res.status} ${await bodyText(res)}`);
     const data = await res.json();
-    for (const b of data.values ?? []) boards.push({ id: b.id, name: b.name, type: b.type });
+    for (const b of data.values ?? []) boards.push(toBoard(b));
     if (data.isLast || (data.values ?? []).length === 0) break;
     startAt += data.maxResults ?? 50;
   }
-  boards.sort((a, b) => a.name.localeCompare(b.name));
-  return boards;
+  return boards.sort(byName);
+}
+
+/** Boards matching a name fragment, filtered by JIRA rather than by us. */
+export async function searchBoards(name: string): Promise<JiraBoard[]> {
+  const params = new URLSearchParams({ maxResults: '50', name });
+  const res = await jira(`/rest/agile/1.0/board?${params.toString()}`);
+  if (!res.ok) throw new Error(`Board search failed: ${res.status} ${await bodyText(res)}`);
+  const data = await res.json();
+  return (data.values ?? []).map(toBoard).sort(byName);
+}
+
+/**
+ * Projects the user has issues assigned in, any resolution — so someone who has
+ * finished everything still gets their boards.
+ *
+ * Note: /rest/api/2/search returns 410 Gone on current JIRA Cloud. The
+ * replacement is token-paginated and reports no total.
+ */
+async function myProjectKeys(): Promise<string[]> {
+  const keys = new Set<string>();
+  let token: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const params = new URLSearchParams({
+      maxResults: '100',
+      fields: 'project',
+      jql: 'assignee = currentUser() ORDER BY updated DESC',
+    });
+    if (token) params.set('nextPageToken', token);
+    const res = await jira(`/rest/api/3/search/jql?${params.toString()}`);
+    if (!res.ok) throw new Error(`Find my projects failed: ${res.status} ${await bodyText(res)}`);
+    const data = await res.json();
+    for (const issue of data.issues ?? []) {
+      const key = issue.fields?.project?.key;
+      if (key) keys.add(key);
+    }
+    token = data.nextPageToken;
+    if (!token || data.isLast) break;
+  }
+  return [...keys];
+}
+
+/**
+ * Boards belonging to the projects the user has work in. JIRA has no user→board
+ * endpoint, so the project is the bridge: find my issues, take their projects,
+ * ask for each project's boards.
+ *
+ * This can include sibling boards in the same project that hold none of my work.
+ * That's the accepted looseness — it's a handful of boards instead of hundreds.
+ */
+export async function getMyBoards(): Promise<JiraBoard[]> {
+  const projects = await myProjectKeys();
+  if (projects.length === 0) return [];
+
+  const perProject = await Promise.all(
+    projects.map(async (key) => {
+      const params = new URLSearchParams({ maxResults: '50', projectKeyOrId: key });
+      const res = await jira(`/rest/agile/1.0/board?${params.toString()}`);
+      // A project can be board-less, or hidden from us; skip rather than fail the lot.
+      if (!res.ok) return [] as JiraBoard[];
+      const data = await res.json();
+      return (data.values ?? []).map(toBoard);
+    }),
+  );
+
+  const byId = new Map<number, JiraBoard>();
+  for (const list of perProject) for (const b of list) byId.set(b.id, b);
+  return [...byId.values()].sort(byName);
 }
 
 /** The board's active sprint (the "current iteration"), or null for Kanban / no active sprint. */

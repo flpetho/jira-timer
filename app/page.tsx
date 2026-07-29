@@ -53,6 +53,10 @@ export default function Home() {
   const [mineOnly, setMineOnly] = useState<boolean>(true);
   const [hydrated, setHydrated] = useState(false);
   const [boardsLoading, setBoardsLoading] = useState(false);
+  const [boardScope, setBoardScope] = useState<'mine' | 'search' | 'all'>('mine');
+  // Remembered so the selected board keeps its label even while `boards` holds
+  // unrelated search results.
+  const [selectedBoardName, setSelectedBoardName] = useState<string | null>(null);
   const [issuesLoading, setIssuesLoading] = useState(false);
   const [now, setNow] = useState<number>(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
@@ -98,16 +102,19 @@ export default function Home() {
     }
   }, []);
 
-  // Boards can take several seconds: JIRA pages them 50 at a time, so an account
-  // with hundreds of boards costs one request per page.
-  const loadBoards = useCallback(async () => {
+  // With no query this returns just the boards you have work in — a handful rather
+  // than every board on the site. A query searches all visible boards, on JIRA's
+  // side, so we never pull hundreds down to filter them here.
+  const loadBoards = useCallback(async (query = '') => {
     setBoardsLoading(true);
     try {
-      const res = await fetch('/api/boards', { cache: 'no-store' });
+      const url = query ? `/api/boards?q=${encodeURIComponent(query)}` : '/api/boards';
+      const res = await fetch(url, { cache: 'no-store' });
       const d = await res.json();
-      const list: JiraBoard[] = d.boards ?? [];
-      setBoards(list);
+      setBoards(d.boards ?? []);
+      setBoardScope(d.scope ?? 'mine');
       // Default board is resolved server-side from JIRA_BOARD_MATCH (else first board).
+      // Never auto-selects from search results — you're choosing there.
       setSelectedBoard((prev) => prev ?? d.defaultBoardId ?? null);
     } catch {
       /* keep last */
@@ -132,10 +139,21 @@ export default function Home() {
   useEffect(() => {
     const b = localStorage.getItem('jt.board');
     const m = localStorage.getItem('jt.mine');
+    const n = localStorage.getItem('jt.boardName');
     if (b) setSelectedBoard(Number(b));
     if (m != null) setMineOnly(m === 'true');
+    if (n) setSelectedBoardName(n);
     setHydrated(true);
   }, []);
+
+  // Keep the remembered label in step whenever the selection is resolvable.
+  useEffect(() => {
+    const name = boards.find((b) => b.id === selectedBoard)?.name;
+    if (name) {
+      setSelectedBoardName(name);
+      localStorage.setItem('jt.boardName', name);
+    }
+  }, [boards, selectedBoard]);
 
   // Connection check + local timer state (both cheap). While disconnected we poll
   // fast, so that saving credentials during setup flips the screen over on its own.
@@ -146,10 +164,15 @@ export default function Home() {
     return () => clearInterval(t);
   }, [loadMe, loadTimer, connected]);
 
-  // Load boards once connected.
+  // Load boards once connected, and again when the filter text settles. Debounced
+  // so typing doesn't fire a JIRA search per keystroke.
   useEffect(() => {
-    if (connected) loadBoards();
-  }, [connected, loadBoards]);
+    if (!connected) return;
+    const q = boardFilter.trim();
+    const delay = q ? 350 : 0;
+    const t = setTimeout(() => loadBoards(q), delay);
+    return () => clearTimeout(t);
+  }, [connected, loadBoards, boardFilter]);
 
   // Fetch (and poll) the selected board's current iteration. `connected` is a
   // dependency on purpose: without it a reconnect wouldn't refetch, leaving the
@@ -256,16 +279,15 @@ export default function Home() {
     });
   }
 
-  // Board picker: filter the (often hundreds of) boards, cap the list, but always
-  // keep the current selection visible as an option.
-  const filteredBoards = boardFilter
-    ? boards.filter((b) => b.name.toLowerCase().includes(boardFilter.toLowerCase()))
-    : boards;
-  const shownBoards = filteredBoards.slice(0, 100);
-  const selectOptions =
-    selectedBoard != null && !shownBoards.some((b) => b.id === selectedBoard)
-      ? ([boards.find((b) => b.id === selectedBoard), ...shownBoards].filter(Boolean) as JiraBoard[])
-      : shownBoards;
+  // `boards` already holds exactly what should be offered — your boards, or the
+  // results of a JIRA-side name search — so there's nothing left to filter here.
+  // The selection is pinned in so it never disappears from its own dropdown while
+  // you're searching for something else.
+  const selectedName = boards.find((b) => b.id === selectedBoard)?.name ?? selectedBoardName;
+  const selectOptions: JiraBoard[] =
+    selectedBoard != null && !boards.some((b) => b.id === selectedBoard)
+      ? [{ id: selectedBoard, name: selectedName ?? `Board ${selectedBoard}`, type: '' }, ...boards]
+      : boards;
 
   // Until JIRA is reachable there is nothing to pick a board from, so the setup
   // screen takes over the body. The header stays put so it still reads as the app.
@@ -298,7 +320,8 @@ export default function Home() {
       <div className="controls">
         <input
           type="text"
-          placeholder="Filter boards…"
+          placeholder="Search all boards…"
+          title="Searches every board you can see in JIRA"
           value={boardFilter}
           onChange={(e) => setBoardFilter(e.target.value)}
           disabled={!connected}
@@ -306,16 +329,18 @@ export default function Home() {
         <select
           value={selectedBoard ?? ''}
           onChange={(e) => setSelectedBoard(e.target.value ? Number(e.target.value) : null)}
-          disabled={!connected || boards.length === 0}
+          disabled={!connected || selectOptions.length === 0}
         >
           {selectedBoard == null && !boardsLoading && <option value="">Pick a board…</option>}
-          {boards.length === 0 && (
+          {selectOptions.length === 0 && (
             <option value="">
               {boardsLoading
                 ? 'Loading boards from JIRA…'
-                : connected
-                  ? 'No boards found'
-                  : 'Connect to load boards'}
+                : !connected
+                  ? 'Connect to load boards'
+                  : boardFilter
+                    ? `No board matching “${boardFilter}”`
+                    : 'No boards found'}
             </option>
           )}
           {selectOptions.map((b) => (
@@ -334,11 +359,14 @@ export default function Home() {
           </button>
         </div>
       </div>
-      {boardFilter && filteredBoards.length > shownBoards.length && (
-        <div className="controls-hint">
-          Showing {shownBoards.length} of {filteredBoards.length} matches — refine the filter.
-        </div>
-      )}
+      {/* Say which set the dropdown is showing, so a short list doesn't look broken. */}
+      <div className="controls-hint">
+        {boardScope === 'search'
+          ? `${boards.length} board${boards.length === 1 ? '' : 's'} matching “${boardFilter}”`
+          : boardScope === 'all'
+            ? 'Nothing assigned to you yet — showing all boards.'
+            : `Boards you have work in. Type above to search all of them.`}
+      </div>
 
       {/* Active timer */}
       {active ? (
