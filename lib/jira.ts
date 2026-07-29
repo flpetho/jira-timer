@@ -285,6 +285,46 @@ export async function getBoardIssues(
   return { issues, doneIssues, sprint };
 }
 
+/** First occurrence wins — an issue can sit on several boards. */
+function dedupeByKey(items: JiraIssue[]): JiraIssue[] {
+  const byKey = new Map<string, JiraIssue>();
+  for (const i of items) if (!byKey.has(i.key)) byKey.set(i.key, i);
+  return [...byKey.values()];
+}
+
+/**
+ * Every board you have work in, merged into one view. Each issue is tagged with
+ * the board it came from, since "current iteration" means nothing across several
+ * boards at once.
+ *
+ * Boards are fetched concurrently and a board that fails is skipped rather than
+ * failing the whole view — one misconfigured board shouldn't blank the page.
+ */
+export async function getAllMyBoardIssues(mineOnly: boolean): Promise<{
+  issues: JiraIssue[];
+  doneIssues: JiraIssue[];
+  boards: JiraBoard[];
+}> {
+  const boards = await getMyBoards();
+  const results = await Promise.all(
+    boards.map(async (board) => {
+      try {
+        const { issues, doneIssues } = await getBoardIssues(board.id, mineOnly);
+        const tag = (list: JiraIssue[]) => list.map((i) => ({ ...i, boardName: board.name }));
+        return { issues: tag(issues), doneIssues: tag(doneIssues) };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const ok = results.filter((r): r is NonNullable<typeof r> => r !== null);
+  return {
+    issues: dedupeByKey(ok.flatMap((r) => r.issues)),
+    doneIssues: dedupeByKey(ok.flatMap((r) => r.doneIssues)),
+    boards,
+  };
+}
+
 export async function getTransitions(key: string): Promise<JiraTransition[]> {
   const res = await jira(`/rest/api/2/issue/${encodeURIComponent(key)}/transitions`);
   if (!res.ok) throw new Error(`Get transitions failed: ${res.status} ${await bodyText(res)}`);

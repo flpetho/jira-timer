@@ -31,6 +31,8 @@ export interface JiraIssue {
   priority: string | null;
   estimateSeconds: number | null;
   description: string | null;
+  /** Which board this came from. Only set in the all-boards view. */
+  boardName?: string | null;
 }
 
 export interface JiraTransition {

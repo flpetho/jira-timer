@@ -13,10 +13,15 @@ import type {
   TimerState,
 } from '@/lib/types';
 
+/** Either one board, or every board the user has work in pooled together. */
+type BoardSel = number | 'all';
+
 interface IssuesData {
   configured: boolean;
   jiraError: string | null;
   boardId: number | null;
+  allBoards: boolean;
+  boardCount: number;
   sprint: JiraSprint | null;
   mineOnly: boolean;
   issues: JiraIssue[];
@@ -47,15 +52,20 @@ export default function Home() {
   const [me, setMe] = useState<MyselfResult | null>(null);
   const [issuesData, setIssuesData] = useState<IssuesData | null>(null);
   const [timer, setTimer] = useState<TimerState | null>(null);
-  const [boards, setBoards] = useState<JiraBoard[]>([]);
-  const [selectedBoard, setSelectedBoard] = useState<number | null>(null);
+  // Boards you have work in — the toggle row. Kept separate from search results so
+  // searching never disturbs what's on offer.
+  const [myBoards, setMyBoards] = useState<JiraBoard[]>([]);
+  // Boards picked out of a search this session, pinned alongside your own.
+  const [pinnedBoards, setPinnedBoards] = useState<JiraBoard[]>([]);
+  const [searchResults, setSearchResults] = useState<JiraBoard[] | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  // 'all' pools every board you have work in; a number is a single board.
+  const [selectedBoard, setSelectedBoard] = useState<BoardSel | null>(null);
   const [boardFilter, setBoardFilter] = useState('');
   const [mineOnly, setMineOnly] = useState<boolean>(true);
   const [hydrated, setHydrated] = useState(false);
   const [boardsLoading, setBoardsLoading] = useState(false);
   const [boardScope, setBoardScope] = useState<'mine' | 'search' | 'all'>('mine');
-  // Remembered so the selected board keeps its label even while `boards` holds
-  // unrelated search results.
   const [selectedBoardName, setSelectedBoardName] = useState<string | null>(null);
   const [issuesLoading, setIssuesLoading] = useState(false);
   const [now, setNow] = useState<number>(() => Date.now());
@@ -102,19 +112,15 @@ export default function Home() {
     }
   }, []);
 
-  // With no query this returns just the boards you have work in — a handful rather
-  // than every board on the site. A query searches all visible boards, on JIRA's
-  // side, so we never pull hundreds down to filter them here.
-  const loadBoards = useCallback(async (query = '') => {
+  // Just the boards you have work in — a handful, not the whole site.
+  const loadMyBoards = useCallback(async () => {
     setBoardsLoading(true);
     try {
-      const url = query ? `/api/boards?q=${encodeURIComponent(query)}` : '/api/boards';
-      const res = await fetch(url, { cache: 'no-store' });
+      const res = await fetch('/api/boards', { cache: 'no-store' });
       const d = await res.json();
-      setBoards(d.boards ?? []);
+      setMyBoards(d.boards ?? []);
       setBoardScope(d.scope ?? 'mine');
       // Default board is resolved server-side from JIRA_BOARD_MATCH (else first board).
-      // Never auto-selects from search results — you're choosing there.
       setSelectedBoard((prev) => prev ?? d.defaultBoardId ?? null);
     } catch {
       /* keep last */
@@ -123,7 +129,26 @@ export default function Home() {
     }
   }, []);
 
-  const loadIssues = useCallback(async (board: number, mine: boolean) => {
+  // Name search runs on JIRA's side, so it reaches every board you can see without
+  // us downloading the lot.
+  const runBoardSearch = useCallback(async (query: string) => {
+    if (!query) {
+      setSearchResults(null);
+      return;
+    }
+    setBoardsLoading(true);
+    try {
+      const res = await fetch(`/api/boards?q=${encodeURIComponent(query)}`, { cache: 'no-store' });
+      const d = await res.json();
+      setSearchResults(d.boards ?? []);
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setBoardsLoading(false);
+    }
+  }, []);
+
+  const loadIssues = useCallback(async (board: BoardSel, mine: boolean) => {
     setIssuesLoading(true);
     try {
       const res = await fetch(`/api/stories?board=${board}&mine=${mine}`, { cache: 'no-store' });
@@ -140,20 +165,22 @@ export default function Home() {
     const b = localStorage.getItem('jt.board');
     const m = localStorage.getItem('jt.mine');
     const n = localStorage.getItem('jt.boardName');
-    if (b) setSelectedBoard(Number(b));
+    if (b) setSelectedBoard(b === 'all' ? 'all' : Number(b));
     if (m != null) setMineOnly(m === 'true');
     if (n) setSelectedBoardName(n);
     setHydrated(true);
   }, []);
 
-  // Keep the remembered label in step whenever the selection is resolvable.
+  // Remember the selected board's label, so a selection restored from localStorage
+  // shows a real name rather than "Board 8557" before the list arrives.
   useEffect(() => {
-    const name = boards.find((b) => b.id === selectedBoard)?.name;
+    if (typeof selectedBoard !== 'number') return;
+    const name = [...myBoards, ...pinnedBoards].find((b) => b.id === selectedBoard)?.name;
     if (name) {
       setSelectedBoardName(name);
       localStorage.setItem('jt.boardName', name);
     }
-  }, [boards, selectedBoard]);
+  }, [myBoards, pinnedBoards, selectedBoard]);
 
   // Connection check + local timer state (both cheap). While disconnected we poll
   // fast, so that saving credentials during setup flips the screen over on its own.
@@ -164,15 +191,18 @@ export default function Home() {
     return () => clearInterval(t);
   }, [loadMe, loadTimer, connected]);
 
-  // Load boards once connected, and again when the filter text settles. Debounced
-  // so typing doesn't fire a JIRA search per keystroke.
+  // Your boards, once connected.
+  useEffect(() => {
+    if (connected) loadMyBoards();
+  }, [connected, loadMyBoards]);
+
+  // Search, debounced so typing doesn't fire a JIRA request per keystroke.
   useEffect(() => {
     if (!connected) return;
     const q = boardFilter.trim();
-    const delay = q ? 350 : 0;
-    const t = setTimeout(() => loadBoards(q), delay);
+    const t = setTimeout(() => runBoardSearch(q), q ? 350 : 0);
     return () => clearTimeout(t);
-  }, [connected, loadBoards, boardFilter]);
+  }, [connected, runBoardSearch, boardFilter]);
 
   // Fetch (and poll) the selected board's current iteration. `connected` is a
   // dependency on purpose: without it a reconnect wouldn't refetch, leaving the
@@ -279,15 +309,24 @@ export default function Home() {
     });
   }
 
-  // `boards` already holds exactly what should be offered — your boards, or the
-  // results of a JIRA-side name search — so there's nothing left to filter here.
-  // The selection is pinned in so it never disappears from its own dropdown while
-  // you're searching for something else.
-  const selectedName = boards.find((b) => b.id === selectedBoard)?.name ?? selectedBoardName;
-  const selectOptions: JiraBoard[] =
-    selectedBoard != null && !boards.some((b) => b.id === selectedBoard)
-      ? [{ id: selectedBoard, name: selectedName ?? `Board ${selectedBoard}`, type: '' }, ...boards]
-      : boards;
+  // The toggle row: your boards, plus anything pinned from a search, plus the
+  // current selection if it came from neither (e.g. restored from localStorage).
+  const boardsById = new Map<number, JiraBoard>();
+  for (const b of [...myBoards, ...pinnedBoards]) boardsById.set(b.id, b);
+  if (typeof selectedBoard === 'number' && !boardsById.has(selectedBoard)) {
+    boardsById.set(selectedBoard, {
+      id: selectedBoard,
+      name: selectedBoardName ?? `Board ${selectedBoard}`,
+      type: '',
+    });
+  }
+  const toggleBoards = [...boardsById.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const pickBoard = (sel: BoardSel) => {
+    setSelectedBoard(sel);
+    setSearchOpen(false);
+    setBoardFilter('');
+    setSearchResults(null);
+  };
 
   // Until JIRA is reachable there is nothing to pick a board from, so the setup
   // screen takes over the body. The header stays put so it still reads as the app.
@@ -316,39 +355,31 @@ export default function Home() {
 
       {issuesData?.jiraError && <div className="banner bad">JIRA error: {issuesData.jiraError}</div>}
 
-      {/* Board picker + assignee filter */}
+      {/* One toggle per board you're on. A handful of boards doesn't need a dropdown. */}
       <div className="controls">
-        <input
-          type="text"
-          placeholder="Search all boards…"
-          title="Searches every board you can see in JIRA"
-          value={boardFilter}
-          onChange={(e) => setBoardFilter(e.target.value)}
-          disabled={!connected}
-        />
-        <select
-          value={selectedBoard ?? ''}
-          onChange={(e) => setSelectedBoard(e.target.value ? Number(e.target.value) : null)}
-          disabled={!connected || selectOptions.length === 0}
-        >
-          {selectedBoard == null && !boardsLoading && <option value="">Pick a board…</option>}
-          {selectOptions.length === 0 && (
-            <option value="">
-              {boardsLoading
-                ? 'Loading boards from JIRA…'
-                : !connected
-                  ? 'Connect to load boards'
-                  : boardFilter
-                    ? `No board matching “${boardFilter}”`
-                    : 'No boards found'}
-            </option>
+        <div className="seg wrap-seg">
+          {toggleBoards.length > 1 && (
+            <button
+              className={selectedBoard === 'all' ? 'on' : ''}
+              onClick={() => pickBoard('all')}
+              title="Pool stories from every board you have work in"
+            >
+              All boards
+            </button>
           )}
-          {selectOptions.map((b) => (
-            <option key={b.id} value={b.id}>
+          {toggleBoards.map((b) => (
+            <button
+              key={b.id}
+              className={selectedBoard === b.id ? 'on' : ''}
+              onClick={() => pickBoard(b.id)}
+            >
               {b.name}
-            </option>
+            </button>
           ))}
-        </select>
+          {toggleBoards.length === 0 && (
+            <button disabled>{boardsLoading ? 'Loading boards…' : 'No boards found'}</button>
+          )}
+        </div>
         <div className="grow" />
         <div className="seg">
           <button className={mineOnly ? 'on' : ''} onClick={() => setMineOnly(true)}>
@@ -359,14 +390,60 @@ export default function Home() {
           </button>
         </div>
       </div>
-      {/* Say which set the dropdown is showing, so a short list doesn't look broken. */}
-      <div className="controls-hint">
-        {boardScope === 'search'
-          ? `${boards.length} board${boards.length === 1 ? '' : 's'} matching “${boardFilter}”`
-          : boardScope === 'all'
-            ? 'Nothing assigned to you yet — showing all boards.'
-            : `Boards you have work in. Type above to search all of them.`}
+
+      {/* Reaching a board you have no work on is the exception, so it stays folded away. */}
+      <div className="board-search">
+        {searchOpen ? (
+          <>
+            <input
+              type="text"
+              autoFocus
+              placeholder="Search all boards in JIRA…"
+              value={boardFilter}
+              onChange={(e) => setBoardFilter(e.target.value)}
+            />
+            <button
+              className="ghost small"
+              onClick={() => {
+                setSearchOpen(false);
+                setBoardFilter('');
+                setSearchResults(null);
+              }}
+            >
+              Cancel
+            </button>
+            {searchResults && (
+              <div className="search-results">
+                {searchResults.length === 0 ? (
+                  <span className="faint">No board matching “{boardFilter}”</span>
+                ) : (
+                  searchResults.map((b) => (
+                    <button
+                      key={b.id}
+                      className="small"
+                      onClick={() => {
+                        setPinnedBoards((prev) =>
+                          prev.some((p) => p.id === b.id) ? prev : [...prev, b],
+                        );
+                        pickBoard(b.id);
+                      }}
+                    >
+                      {b.name}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <button className="link" onClick={() => setSearchOpen(true)}>
+            Search all boards…
+          </button>
+        )}
       </div>
+      {boardScope === 'all' && (
+        <div className="controls-hint">Nothing assigned to you yet — showing all boards.</div>
+      )}
 
       {/* Active timer */}
       {active ? (
@@ -409,10 +486,22 @@ export default function Home() {
         </div>
       )}
 
-      {/* Current iteration */}
+      {/* Current iteration, or the pooled view across boards */}
       <div className="iteration">
-        <span className="lbl">{issuesData?.sprint ? 'Current iteration' : 'Open issues'}</span>
-        {issuesData?.sprint && <span className="name">{issuesData.sprint.name}</span>}
+        <span className="lbl">
+          {issuesData?.allBoards
+            ? 'Open issues'
+            : issuesData?.sprint
+              ? 'Current iteration'
+              : 'Open issues'}
+        </span>
+        {issuesData?.allBoards ? (
+          <span className="name">
+            across {issuesData.boardCount} board{issuesData.boardCount === 1 ? '' : 's'}
+          </span>
+        ) : (
+          issuesData?.sprint && <span className="name">{issuesData.sprint.name}</span>
+        )}
         {/* Refreshing over data we already show: a quiet spinner, no layout shift. */}
         {issuesLoading && issuesData && <span className="spinner sm" aria-label="Refreshing" />}
       </div>
@@ -425,8 +514,8 @@ export default function Home() {
             : selectedBoard == null
               ? 'Pick a board above.'
               : mineOnly
-                ? 'Nothing assigned to you in this iteration.'
-                : 'No open issues in this iteration.'}
+                ? 'Nothing assigned to you here.'
+                : 'No open issues here.'}
         </div>
       ) : (
         upNext.map(({ issue, timer: t }) => {
@@ -438,6 +527,9 @@ export default function Home() {
                   <span className="key">{issue.key}</span>
                   <span className="status-chip">{issue.status}</span>
                   <TimeChips tracked={prior} logged={t?.loggedSeconds ?? null} />
+                  {/* Only meaningful when boards are pooled; otherwise it's the same
+                      board on every row and just adds noise. */}
+                  {issue.boardName && <span className="chip-board">{issue.boardName}</span>}
                   <span className="assignee">{issue.assignee ?? 'Unassigned'}</span>
                 </div>
                 <div className="summary" title={issue.summary}>

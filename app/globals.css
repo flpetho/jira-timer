@@ -95,6 +95,28 @@ html, body {
 .chip-tracked { color: var(--accent); background: rgba(125, 211, 252, 0.13); }
 .chip-logged { color: #fcd34d; background: rgba(251, 191, 36, 0.14); }
 
+/* Which board a story came from. Only shown when boards are pooled. */
+.chip-board {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  background: var(--hover);
+  padding: 2px 7px;
+  border-radius: var(--radius);
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Board toggles wrap, since names are long and there may be several. */
+.seg.wrap-seg { flex-wrap: wrap; max-width: 68%; }
+.seg.wrap-seg button { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.board-search { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 2px 12px; }
+.board-search input[type='text'] { width: 240px; padding: 6px 10px; }
+.search-results { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
+
 /* Finished work carrying time that never reached JIRA — needs action, not just a label. */
 .chip-unlogged {
   font-size: 10px;
