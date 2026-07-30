@@ -2,6 +2,7 @@ import 'server-only';
 import type { JiraIssue, JiraTransition, JiraBoard, JiraSprint } from './types';
 import { missingCreds, reasonForStatus, type MyselfResult } from './conn';
 import { parseActivities } from './activities';
+import { stageFor } from './stages';
 
 export type { MyselfResult };
 
@@ -104,19 +105,27 @@ function mapIssue(i: any): JiraIssue {
     key: i.key,
     summary: f.summary ?? '',
     status: f.status?.name ?? '?',
+    // The board column, which a renamed status can't disturb. Nested inside the
+    // `status` field already being requested, so it costs nothing to read.
+    stage: stageFor(f.status?.statusCategory?.key),
     assignee: f.assignee?.displayName ?? null,
     issuetype: f.issuetype?.name ?? '?',
     priority: f.priority?.name ?? null,
     estimateSeconds: f.timeoriginalestimate ?? f.timetracking?.originalEstimateSeconds ?? null,
     // JIRA's own total for the issue, including worklogs made before this app
     // existed or outside it. This — not our local tally — is the time spent.
-    secondsSpent: f.timespent ?? f.timetracking?.timeSpentSeconds ?? null,
+    //
+    // `aggregatetimespent` rolls up subtasks; `timespent` counts only the issue
+    // itself, so a parent whose work happens in its subtasks reads as zero.
+    secondsSpent:
+      f.aggregatetimespent ?? f.timespent ?? f.timetracking?.timeSpentSeconds ?? null,
     description: descriptionToText(f.description),
   };
 }
 
 const ISSUE_FIELDS =
-  'summary,status,assignee,issuetype,priority,timeoriginalestimate,timetracking,timespent,description';
+  'summary,status,assignee,issuetype,priority,timeoriginalestimate,timetracking,' +
+  'timespent,aggregatetimespent,description';
 
 /** Flatten Atlassian Document Format (ADF) — or a plain string — to readable text. */
 function adfToText(node: any): string {
@@ -265,11 +274,15 @@ async function fetchIssues(path: string, clauses: string[], order: string): Prom
 }
 
 /**
- * The board's current iteration (active sprint), split by resolution. Falls back
- * to the board's issues when there's no active sprint. `mineOnly` restricts both
- * lists to the current user.
+ * The board's current iteration (active sprint), split into the Done column and
+ * everything before it. Falls back to the board's issues when there's no active
+ * sprint. `mineOnly` restricts both lists to the current user.
  *
- * `doneIssues` exists so the Completed section can show iteration work that was
+ * The split is on `statusCategory`, not `resolution`: a story parked in the Done
+ * column without a resolution set is Done as far as the board is concerned, and
+ * splitting on resolution put it in the open list where it contradicted the board.
+ *
+ * `doneIssues` exists so the Done section can show iteration work that was
  * finished in JIRA even when the timer never tracked it — otherwise a story you
  * completed without the timer is invisible here.
  */
@@ -284,8 +297,8 @@ export async function getBoardIssues(
   const mine = mineOnly ? ['assignee = currentUser()'] : [];
 
   const [issues, doneIssues] = await Promise.all([
-    fetchIssues(path, [...mine, 'resolution = Unresolved'], 'status ASC, updated DESC'),
-    fetchIssues(path, [...mine, 'resolution != Unresolved'], 'updated DESC'),
+    fetchIssues(path, [...mine, 'statusCategory != Done'], 'status ASC, updated DESC'),
+    fetchIssues(path, [...mine, 'statusCategory = Done'], 'updated DESC'),
   ]);
   return { issues, doneIssues, sprint };
 }
@@ -338,6 +351,9 @@ export async function getTransitions(key: string): Promise<JiraTransition[]> {
     id: String(t.id),
     name: t.name,
     to: t.to?.name ?? '',
+    // Which column this transition lands the story in, so Done can preselect a
+    // transition that actually finishes the story rather than leaving it open.
+    toStage: stageFor(t.to?.statusCategory?.key),
   }));
 }
 

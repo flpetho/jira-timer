@@ -84,14 +84,42 @@ html, body {
 /* Cards */
 .card { background: var(--panel); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
 .card.active { background: linear-gradient(180deg, var(--panel-2), var(--panel)); }
+/* Paused still means "this is the story I'm on", so the card keeps its weight and
+   its readout; only the clock itself reads differently. See .clock.paused. */
+.card.active.is-paused { background: var(--panel); }
+
+/* Asking JIRA to catch up with what the timer is doing. --warn is the token for
+   things wanting attention, so this needs no colour of its own. */
+.nudge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  background: rgba(211, 177, 119, 0.09);
+  border-radius: var(--radius);
+}
+.nudge-text { font-size: 12px; color: var(--warn); }
+.nudge-error { font-size: 11px; color: var(--danger); }
 
 .section-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--faint);
   margin: 32px 2px 12px;
 }
+.section-label .count { font-variant-numeric: tabular-nums; letter-spacing: 0.04em; opacity: 0.7; }
+
+/* One board column each, in the order the board reads them. The first sits closer
+   to the iteration subheading it belongs to. */
+.stage:first-of-type .section-label { margin-top: 18px; }
+.section-note { font-size: 11px; color: var(--faint); margin: -6px 2px 10px; line-height: 1.45; }
+.empty.sm { font-size: 12px; padding: 2px 2px 10px; opacity: 0.7; }
 
 .key { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
 /* Time badges. Neutral = measured locally; yellow = already in JIRA. Same shape
@@ -131,17 +159,6 @@ html, body {
 .board-search input[type='text'] { width: 240px; padding: 6px 10px; }
 .search-results { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
 
-/* Finished work carrying time that never reached JIRA — needs action, not just a label. */
-.chip-unlogged {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--danger);
-  background: rgba(208, 149, 149, 0.13);
-  padding: 2px 7px;
-  border-radius: var(--radius);
-  white-space: nowrap;
-}
 
 .status-chip {
   font-size: 10px;
@@ -158,6 +175,9 @@ html, body {
 
 /* Active card */
 .active-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+/* Pushed to the far right of the card's top line. `margin-left: auto` rather than a
+   spacer div, so it still lands right when the line wraps. */
+.card-close { margin-left: auto; }
 .clock {
   font-variant-numeric: tabular-nums;
   font-size: 44px;
@@ -167,12 +187,16 @@ html, body {
 }
 .clock.running { color: var(--text); }
 .clock.paused { color: var(--muted); }
+/* Stopping the clock no longer collapses the card, so say why it's still here. */
+.clock-note { font-size: 11px; color: var(--faint); margin: 0 0 10px; }
 .est-line { font-size: 12.5px; color: var(--muted); margin-bottom: 18px; }
 .est-line b { color: var(--text); font-weight: 600; }
 .est-line .over { color: var(--warn); }
 .est-line .under { color: var(--muted); }
 
-.row-actions { display: flex; gap: 8px; }
+/* Only on the focused card. The top margin keeps the buttons clear of whatever
+   ends the card above them — the description's "show more" sits tight otherwise. */
+.row-actions { display: flex; gap: 8px; margin-top: 16px; }
 
 /* Stop-and-attribute buttons on the running card. */
 .stop-as { margin: 8px 0 18px; }
@@ -187,20 +211,74 @@ html, body {
 
 /* Where this story's unlogged time has gone. */
 .breakdown { margin: 0 0 18px; display: flex; flex-direction: column; gap: 7px; }
+/* Follows the estimate line, which already carries 18px below it. */
+.est-line + .breakdown { margin-top: -4px; }
 .breakdown-row {
   display: grid;
-  grid-template-columns: 92px 1fr auto;
+  /* Last column holds the resolve affordance, kept present-but-empty on rows that
+     can't be changed so the amounts stay aligned down the list. */
+  grid-template-columns: 92px 1fr auto 22px;
   align-items: center;
   gap: 12px;
   font-size: 12.5px;
 }
-.breakdown-row .bar {
+.xs-spacer { display: block; }
+button.xs {
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  background: transparent;
+  color: var(--faint);
+}
+button.xs:hover { background: var(--hover); color: var(--text); }
+
+/* Moving or dropping time the timer measured but hasn't sent. Sits under the bar
+   it belongs to. */
+.resolve {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 4px 104px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border-radius: var(--radius);
+}
+.resolve select { width: auto; font-size: 12px; padding: 5px 8px; }
+.resolve-warn { font-size: 12px; color: var(--danger); }
+.resolve-note { font-size: 11px; color: var(--faint); }
+button.danger { background: rgba(208, 149, 149, 0.16); color: var(--danger); }
+button.danger:hover { background: rgba(208, 149, 149, 0.26); }
+
+/* Any status JIRA offers, in either direction. */
+.status-control { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; flex-wrap: wrap; }
+.status-control label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+.status-control select { width: auto; min-width: 150px; font-size: 12px; padding: 5px 8px; }
+
+/* Opens a collapsed row into the full card. */
+button.disclose { font-size: 15px; line-height: 1; padding: 4px 9px; color: var(--muted); }
+/* One track per activity, split into what JIRA already has and what Done will
+   still send. Same accent throughout — only the opacity differs, so a bar reads as
+   one quantity with a banked portion rather than as two colours competing. */
+.breakdown-row .bar-track {
+  display: flex;
+  gap: 2px;
   height: 4px;
+  min-width: 2px;
+}
+.breakdown-row .bar {
+  height: 100%;
   min-width: 2px;
   background: var(--accent);
   opacity: 0.45;
   border-radius: 2px;
 }
+.breakdown-row .bar.is-logged { opacity: 0.2; }
 .breakdown-row b { font-variant-numeric: tabular-nums; font-weight: 600; }
 /* The row still accruing: brighter label, solid bar, gently pulsing so it reads
    as live rather than just another entry. */
@@ -225,6 +303,22 @@ html, body {
 .row .grow { flex: 1; min-width: 0; }
 .row .line1 { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; flex-wrap: wrap; }
 .row .summary { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Done and off-board rows. The panel drops away so a finished story sits directly
+   on the page — a different class of object from anything still actionable, and
+   done without spending a colour on it. Green stays status-only. */
+.row.receded {
+  background: transparent;
+  padding: 9px 16px;
+  margin-bottom: 2px;
+}
+.row.receded:hover { background: var(--panel); }
+.row.receded .key { color: var(--muted); }
+.row.receded .summary,
+.row.receded .assignee,
+.row.receded .meta { color: var(--faint); }
+.row.receded .status-chip { color: var(--faint); background: rgba(255, 255, 255, 0.04); }
+.done-mark { color: var(--faint); font-size: 11px; line-height: 1; }
 
 /* Buttons */
 button {

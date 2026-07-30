@@ -7,6 +7,10 @@ import {
   pendingLogSeconds,
   unloggedByActivity,
   unloggedBreakdown,
+  trackedByActivity,
+  relabelActivity,
+  discardUnlogged,
+  unloggedSeconds,
   normalizeState,
 } from './timer-logic';
 import type { TimerState } from './types';
@@ -176,6 +180,257 @@ describe('unloggedBreakdown (display)', () => {
     s = pauseActive(s, 10 * M, 'Meeting');
     const rows = unloggedBreakdown(s.stories['TEST-1'], 20 * M);
     expect(rows.some((r) => r.running)).toBe(false);
+  });
+});
+
+describe('relabelActivity', () => {
+  it('attributes a chunk that was stopped without a label', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M); // no label
+    s = relabelActivity(s, 'TEST-1', 'Unlabelled', 'Building');
+    expect(trackedByActivity(s.stories['TEST-1'], 20 * M)).toEqual([
+      { activity: 'Building', seconds: 10 * 60, loggedSeconds: 0 },
+    ]);
+  });
+
+  it('moves time from one activity to another', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = relabelActivity(s, 'TEST-1', 'Meeting', 'Review');
+    expect(trackedByActivity(s.stories['TEST-1'], 20 * M)).toEqual([
+      { activity: 'Review', seconds: 10 * 60, loggedSeconds: 0 },
+    ]);
+  });
+
+  it('merges into an activity that already has time', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Building');
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 25 * M); // unlabelled
+    s = relabelActivity(s, 'TEST-1', 'Unlabelled', 'Building');
+    expect(trackedByActivity(s.stories['TEST-1'], 30 * M)).toEqual([
+      { activity: 'Building', seconds: 15 * 60, loggedSeconds: 0 },
+    ]);
+  });
+
+  it('clearing a label back to Unlabelled removes it rather than writing the word', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = relabelActivity(s, 'TEST-1', 'Meeting', 'Unlabelled');
+    expect(s.stories['TEST-1'].segments[0].activity).toBeNull();
+  });
+
+  // Every Done story has all its segments logged, so refusing to touch logged time
+  // left "Unlabelled" rows on finished work permanently unfixable.
+  it('relabels logged time too, keeping it marked as logged', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = relabelActivity(s, 'TEST-1', 'Meeting', 'Building');
+    expect(trackedByActivity(s.stories['TEST-1'], 20 * M)).toEqual([
+      { activity: 'Building', seconds: 10 * 60, loggedSeconds: 10 * 60 },
+    ]);
+  });
+
+  // Safe precisely because a logged segment is never re-sent: relabelling one must
+  // not resurrect it into the next worklog.
+  it('relabelling logged time gives a later Done nothing new to send', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = relabelActivity(s, 'TEST-1', 'Meeting', 'Building');
+    expect(unloggedByActivity(s.stories['TEST-1'], 20 * M)).toEqual([]);
+    expect(unloggedSeconds(s.stories['TEST-1'], 20 * M)).toBe(0);
+    expect(s.stories['TEST-1'].loggedSeconds).toBe(10 * 60);
+  });
+
+  it('relabels a partly-logged category as a whole', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 35 * M, 'Meeting');
+    s = relabelActivity(s, 'TEST-1', 'Meeting', 'Building');
+    expect(trackedByActivity(s.stories['TEST-1'], 40 * M)).toEqual([
+      { activity: 'Building', seconds: 25 * 60, loggedSeconds: 10 * 60 },
+    ]);
+  });
+
+  it('leaves the running chunk alone — stopping is what labels it', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = relabelActivity(s, 'TEST-1', 'Unlabelled', 'Building');
+    expect(s.stories['TEST-1'].segments[0].activity).toBeUndefined();
+    expect(s.stories['TEST-1'].segments[0].end).toBeNull();
+  });
+
+  it('is a no-op for an unknown story or activity', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    const before = JSON.stringify(s);
+    s = relabelActivity(s, 'NOPE-1', 'Meeting', 'Building');
+    s = relabelActivity(s, 'TEST-1', 'Testing', 'Building');
+    expect(JSON.stringify(s)).toBe(before);
+  });
+});
+
+describe('unloggedSeconds', () => {
+  // The bug this replaced: `tracked - loggedSeconds` counted the rounding residue as
+  // unsent work, so a fully-logged story advertised "2m unlogged" that /api/done
+  // would then refuse to send.
+  it('is zero once every segment is logged, whatever the rounding did', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 0 + 7333 * 1000);
+    // Done rounded 7333s down to 7200s and marked the segment covered.
+    s = markDone(s, 'TEST-1', 7333 * 1000, 'w1', 7200);
+    const story = s.stories['TEST-1'];
+    expect(activeSeconds(story.segments, 8000 * 1000) - (story.loggedSeconds ?? 0)).toBe(133);
+    expect(unloggedSeconds(story, 8000 * 1000)).toBe(0);
+  });
+
+  it('counts only the chunks no worklog covers', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 35 * M, 'Building');
+    expect(unloggedSeconds(s.stories['TEST-1'], 40 * M)).toBe(15 * 60);
+  });
+
+  it('includes the chunk still running', () => {
+    const s = startTimer(emptyState(), issue('TEST-1'), 0);
+    expect(unloggedSeconds(s.stories['TEST-1'], 5 * M)).toBe(5 * 60);
+  });
+
+  it('is zero for a story with no segments', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Building');
+    s = discardUnlogged(s, 'TEST-1', 'Building');
+    expect(unloggedSeconds(s.stories['TEST-1'], 20 * M)).toBe(0);
+  });
+});
+
+describe('discardUnlogged', () => {
+  it('throws away a mis-start', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 16 * 1000); // 16 seconds, unlabelled
+    s = discardUnlogged(s, 'TEST-1', 'Unlabelled');
+    expect(s.stories['TEST-1'].segments).toEqual([]);
+    expect(activeSeconds(s.stories['TEST-1'].segments, 60 * M)).toBe(0);
+  });
+
+  it('removes only the named activity', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 40 * M, 'Building');
+    s = discardUnlogged(s, 'TEST-1', 'Meeting');
+    expect(trackedByActivity(s.stories['TEST-1'], 50 * M)).toEqual([
+      { activity: 'Building', seconds: 20 * 60, loggedSeconds: 0 },
+    ]);
+  });
+
+  // The worklog exists in JIRA whatever happens to the local segments, so the
+  // record of what we sent must survive.
+  it('never discards logged time, and keeps loggedSeconds intact', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = discardUnlogged(s, 'TEST-1', 'Meeting');
+    expect(s.stories['TEST-1'].segments).toHaveLength(1);
+    expect(s.stories['TEST-1'].loggedSeconds).toBe(10 * 60);
+  });
+
+  it('leaves the running chunk alone', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = discardUnlogged(s, 'TEST-1', 'Unlabelled');
+    expect(s.stories['TEST-1'].segments).toHaveLength(1);
+  });
+
+  it('discarding everything unlogged leaves nothing for Done to send', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 30 * M, 'Building');
+    s = discardUnlogged(s, 'TEST-1', 'Building');
+    const story = s.stories['TEST-1'];
+    expect(pendingLogSeconds(activeSeconds(story.segments, 40 * M), 0, 5)).toBe(0);
+  });
+});
+
+describe('trackedByActivity (display)', () => {
+  it('groups every tracked chunk by activity, logged or not', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 50 * M, 'Building');
+    expect(trackedByActivity(s.stories['TEST-1'], 60 * M)).toEqual([
+      { activity: 'Meeting', seconds: 10 * 60, loggedSeconds: 10 * 60 },
+      { activity: 'Building', seconds: 30 * 60, loggedSeconds: 0 },
+    ]);
+  });
+
+  // The case that showed nothing at all before: a story whose time has all been
+  // sent to JIRA. unloggedBreakdown returns [] for it by design.
+  it('still reports categories once everything has been logged', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 40 * M, 'Building');
+    s = markDone(s, 'TEST-1', 40 * M, 'w1', 40 * 60);
+    expect(unloggedBreakdown(s.stories['TEST-1'], 50 * M)).toEqual([]);
+    expect(trackedByActivity(s.stories['TEST-1'], 50 * M)).toEqual([
+      { activity: 'Building', seconds: 40 * 60, loggedSeconds: 40 * 60 },
+    ]);
+  });
+
+  it('splits a partly-logged category into logged and not', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Building');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 35 * M, 'Building');
+    expect(trackedByActivity(s.stories['TEST-1'], 40 * M)).toEqual([
+      { activity: 'Building', seconds: 25 * 60, loggedSeconds: 10 * 60 },
+    ]);
+  });
+
+  it('pins the running chunk first and never calls it logged', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = startTimer(s, issue('TEST-1'), 20 * M); // still running
+    const rows = trackedByActivity(s.stories['TEST-1'], 35 * M);
+    expect(rows[0]).toEqual({
+      activity: 'Running',
+      seconds: 15 * 60,
+      loggedSeconds: 0,
+      running: true,
+    });
+    expect(rows[1]).toEqual({ activity: 'Meeting', seconds: 10 * 60, loggedSeconds: 10 * 60 });
+  });
+
+  it('sums to the same total the clock shows', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Meeting');
+    s = markDone(s, 'TEST-1', 10 * M, 'w1', 10 * 60);
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    const story = s.stories['TEST-1'];
+    const rows = trackedByActivity(story, 45 * M);
+    const summed = rows.reduce((n, r) => n + r.seconds, 0);
+    expect(summed).toBe(activeSeconds(story.segments, 45 * M));
+  });
+
+  it('reports nothing for a story with no tracked time', () => {
+    const s = emptyState();
+    s.stories['TEST-1'] = {
+      key: 'TEST-1',
+      summary: 'x',
+      status: 'To Do',
+      assignee: null,
+      estimateSeconds: null,
+      segments: [],
+      doneAt: null,
+      worklogId: null,
+      loggedSeconds: null,
+    };
+    expect(trackedByActivity(s.stories['TEST-1'], 0)).toEqual([]);
   });
 
   it('keeps Running out of what gets logged', () => {

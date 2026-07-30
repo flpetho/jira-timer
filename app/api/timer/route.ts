@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { readState, writeState } from '@/lib/store';
-import { startTimer, pauseActive, type IssueMeta } from '@/lib/timer-logic';
+import {
+  startTimer,
+  pauseActive,
+  relabelActivity,
+  discardUnlogged,
+  type IssueMeta,
+} from '@/lib/timer-logic';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +32,26 @@ export async function POST(req: Request) {
     // which leaves it unlabelled so it can be attributed later.
     const activity = (body?.activity as string | undefined)?.trim() || undefined;
     pauseActive(state, now, activity);
+  } else if (action === 'relabel' || action === 'discard') {
+    // Fixing up time the timer already measured. Still no JIRA call: these only
+    // change what a future Done would send, never what it already sent.
+    const key = (body?.key as string | undefined)?.trim();
+    const activity = (body?.activity as string | undefined)?.trim();
+    if (!key || !activity) {
+      return NextResponse.json({ error: `${action} requires key and activity` }, { status: 400 });
+    }
+    if (!state.stories[key]) {
+      return NextResponse.json({ error: `no timer for ${key}` }, { status: 404 });
+    }
+    if (action === 'relabel') {
+      const to = body?.to as string | undefined;
+      if (to == null) {
+        return NextResponse.json({ error: 'relabel requires to' }, { status: 400 });
+      }
+      relabelActivity(state, key, activity, to);
+    } else {
+      discardUnlogged(state, key, activity);
+    }
   } else {
     return NextResponse.json({ error: `unknown action: ${action}` }, { status: 400 });
   }

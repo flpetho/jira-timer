@@ -7,11 +7,48 @@ done it logs the hours to JIRA as a worklog and can move the story's status.
 It exists to answer "estimate vs. actual" honestly. Leaving the window open all
 weekend adds nothing — only start→stop segments count.
 
-![The timer running against a story](docs/images/timer.png)
+![The board's three columns, with a timer running on a story in progress](docs/images/timer.png)
 
 Everything stays local: your API token lives in a file on your machine, the
 timer's history is a JSON file in your home folder, and nothing is shared with
 anyone else.
+
+## What it gives you
+
+**Your board's columns, in your board's order.** Stories are grouped **To Do → In
+Progress → Done**, taken from JIRA's own status categories — so a team that renames
+"In Progress" to "In Test" gets it filed correctly with no configuration. A fourth
+group, *Tracked elsewhere*, catches stories you've tracked time against that this
+board no longer lists, so that time can never quietly vanish.
+
+**Time that stays on screen when you stop.** Pausing doesn't collapse the story back
+to a one-line row. The clock, the estimate line and the activity breakdown all stay
+put, so you can see what you just measured without starting the clock again.
+
+**A breakdown of where the time went.** Every activity gets a bar, always — not only
+while the clock runs. Each bar shows what's already in JIRA at lower opacity and
+what's still waiting to be sent at full, so "what will Done actually log?" is
+answerable at a glance.
+
+**Open any story for the full picture.** Collapsed rows stay short and scannable;
+click the `⌄` on any of them for the same card the running story gets.
+
+![A finished story opened, with its unlabelled time being reattributed](docs/images/story-card.png)
+
+**Fix up time after the fact.** Stopped a timer without labelling it, or labelled it
+wrongly? Each row in the breakdown offers **Move to…** to reattribute it and
+**Remove…** to throw it away. Time already sent to JIRA can be renamed here but not
+deleted — the app won't let your local record claim less time than JIRA has been told
+about.
+
+**Move a story between columns.** An open card carries a status dropdown offering
+every transition JIRA allows, in either direction. And if you start a timer on
+something still sitting in To Do, the card offers to move it to In Progress for you.
+
+**Done finishes the story.** The Done dialog preselects a transition into the Done
+column rather than leaving the status untouched — while deliberately skipping
+`Cancelled`, `Won't Do` and friends, so finished work is never written off as
+abandoned by default.
 
 ## Get it running
 
@@ -67,12 +104,13 @@ see it in JIRA itself with the same account.
 
 ## Make it yours
 
-This is intentionally small and readable — around 1,400 lines of TypeScript, no
-database, no accounts, no build step beyond Next.js. It's a good size to poke at
-with [Claude Code](https://claude.com/claude-code).
+This is intentionally small and readable — around 3,000 lines of TypeScript and one
+hand-written stylesheet, no database, no accounts, no state management library, no
+build step beyond Next.js. It's a good size to poke at with
+[Claude Code](https://claude.com/claude-code).
 
-The repo includes a `CLAUDE.md` describing the architecture, so Claude already
-knows its way around. Things people usually want first:
+The repo includes a `CLAUDE.md` describing the architecture and the traps, so Claude
+already knows its way around. Things people usually want first:
 
 - Round logged time differently (`TIMER_ROUND_MINUTES`, or change the rule outright)
 - Show a daily or weekly total across stories
@@ -80,6 +118,7 @@ knows its way around. Things people usually want first:
 - Default to a specific board (`JIRA_BOARD_MATCH`)
 - Add a note field that always prefills the same text
 - Export your tracked time as CSV
+- Collapse the Done column by default, or hide it entirely
 
 Ask for what you want in plain language:
 
@@ -97,20 +136,32 @@ quickly if something broke.
 - **Board picker** (`GET /api/boards`) lists every board you can see. The one
   preselected on load comes from `JIRA_BOARD_MATCH`, else the first board.
 - **Story list** (`GET /api/stories?board=&mine=`) pulls the board's active
-  sprint, falling back to all board issues when there's no active sprint,
-  filtered to unresolved and — unless you switch to "Everyone" — to you. It
-  never touches the local timer store, so timer buttons don't wait on JIRA.
+  sprint, falling back to all board issues when there's no active sprint, and —
+  unless you switch to "Everyone" — to you. It splits on JIRA's `statusCategory`,
+  which is what makes the columns agree with the board even for a story sitting in
+  Done with no resolution set. It never touches the local timer store, so timer
+  buttons don't wait on JIRA.
 - **Start/Pause** open and close time segments. Active time is the sum of
   segments (`lib/time.ts`), which is why idle time never counts.
 - **Stop and log as…** closes the current segment and tags it with an activity
   (meeting, building, testing — see `JIRA_ACTIVITIES`). The story stays open; only
   Done writes to JIRA, and it posts one worklog per activity so the breakdown is
   visible in the issue's Work Log tab.
+- **Move / Remove** (`POST /api/timer`) reattribute or discard tracked time. Local
+  only, like every timer action — they change what a *future* Done will send, never
+  what one already sent.
+- **Status changes** (`POST /api/transitions`) move a story without logging
+  anything, which is why starting a timer still works when JIRA is unreachable.
 - **Done** posts a worklog rounded to `TIMER_ROUND_MINUTES` and optionally
-  transitions the story. The returned worklog id is stored so a story can't be
-  logged twice.
+  transitions the story. It logs only what JIRA doesn't already have, so pressing
+  Done twice can't double-count, and it reads JIRA's `aggregatetimespent` so a
+  parent whose work happens in subtasks doesn't report zero.
 - State lives in `~/.jira-timer/state.json` — plain readable JSON that survives
   restarts and accrues across days.
+
+Three quantities are kept deliberately distinct, and the app is careful never to
+conflate them: what JIRA says is spent (including worklogs made before you installed
+this), what this app has sent, and what it has measured but not sent yet.
 
 ## Settings (`.env.local`)
 
@@ -148,5 +199,12 @@ Or do it yourself with `sh scripts/service.sh update`.
 ## Tests
 
 ```bash
-npm test          # time maths, timer state transitions, connection classification
+npm test          # 113 tests
+npx tsc --noEmit  # typecheck
 ```
+
+Pure logic only: segment maths, timer state transitions, board-column grouping,
+activity attribution and connection classification. There's no rendering harness — if
+you add a feature with real logic in it, put that logic in a function in `lib/` and
+test it there. That's why `lib/stages.ts` and `lib/timer-logic.ts` hold the rules and
+`app/page.tsx` mostly just renders what they return.

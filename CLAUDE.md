@@ -19,6 +19,42 @@ Port 4100 is often occupied by the user's always-on instance. Use
 `npm run dev -- -p 4101` rather than stopping their timer — safe because dev
 builds into `.next-dev` (see below).
 
+## The board is the layout
+
+The page is the board's three columns, top to bottom in the order the board reads
+them left to right: **To Do, In Progress, Done**, then a quiet **Tracked
+elsewhere** group. A story's column comes from JIRA's `status.statusCategory.key`
+(`new` / `indeterminate` / `done`) via `stageFor` — never from the status *name*,
+which teams rename freely.
+
+Two things follow from this that are easy to undo:
+
+- **`getBoardIssues` splits on `statusCategory`, not `resolution`.** A story parked
+  in the Done column with no resolution set is Done to everyone looking at the
+  board; splitting on resolution filed it as open, where it contradicted the board.
+- **Nothing is hoisted above the columns.** The story you're working on renders as
+  a full card *inside its own column*, so its position can never disagree with the
+  heading above it.
+
+## Focused is not the same as active
+
+`activeKey` is the story whose clock is running. **Focused** (`focusKey` in
+`lib/stages.ts`) is the story showing its full readout — clock, activity
+breakdown, estimate line — and it is deliberately *not* the same thing:
+`pauseActive` sets `activeKey` to null, so keying the expanded card off the timer
+alone made every one of those figures vanish the instant you stopped, and the only
+route back was to start the clock again. Focus falls back to the most recently
+worked open story, so stopping keeps the numbers on screen.
+
+A third thing sits alongside those two: **open**. Any row can be opened into the
+same card (`openCards` + `isOpen` in `page.tsx`), and the focused story is always
+open. So the focused card has no Close button — there'd be nothing to collapse to.
+
+An opened card may have **no timer at all** (`row.timer === null`) — a Done issue
+someone finished without this app. That card still has a summary, status and
+description worth reading, so it renders without a clock or bars rather than
+bailing out. Guard on `story` before touching segments.
+
 ## The one important design rule
 
 **Time is stored as segments, never as a running total.** A `Segment` is
@@ -35,7 +71,7 @@ optional so state files written before those existed still load — see
 
 ```
 app/
-  page.tsx          Main UI. Client component, ~940 lines. Polls JIRA, owns all state.
+  page.tsx          Main UI. Client component, ~990 lines. Polls JIRA, owns all state.
   SetupScreen.tsx   Shown whenever JIRA isn't reachable. Explains how to connect.
   globals.css       All styling. Design tokens at the top; no framework.
   icon-version.ts   ICON_VERSION — bump when public/icon.svg changes.
@@ -43,13 +79,15 @@ app/
     me/             Connection check, why it failed, and the activity list
     boards/         Boards you have work in; ?q= searches all of them
     stories/        Open + resolved issues for a board, or board=all to pool
-    timer/          start / pause(activity) — local only, never calls JIRA
+    timer/          start / pause / relabel / discard — local only, never calls JIRA
     done/           Post one worklog per activity, optionally transition status
-    transitions/    Available status transitions for a story
+    transitions/    GET the available transitions; POST one, without logging time
 lib/
   jira.ts           All JIRA HTTP. Has `import 'server-only'`.
   conn.ts           Connection-state classification. Pure, no I/O, no server-only.
   activities.ts     Activity parsing + apportioning a rounded total. Pure.
+  stages.ts         Board columns: grouping, which story is focused, which
+                    transition finishes a story. Pure.
   time.ts           Segment maths and duration formatting.
   timer-logic.ts    Pure state transitions and unlogged-time grouping.
   store.ts          Reads/writes ~/.jira-timer/state.json, normalising on read.
@@ -80,15 +118,56 @@ each activity separately inflates badly — three 2-minute chunks at a 5-minute
 increment would log 15 minutes for 6 minutes of work, corrupting the
 estimate-vs-actual data the tool exists to produce.
 
-**Display grouping and logging grouping are different functions.**
-`unloggedBreakdown` splits the running chunk into its own `Running` row for the
-UI; `unloggedByActivity` folds it into `Unlabelled` for worklogs. A worklog must
-never read "Running" — by the time anything reaches JIRA the chunk is closed and
-genuinely unattributed.
+**Display grouping and logging grouping are different functions.** Three of them,
+and mixing them up breaks something each way:
+
+- `trackedByActivity` — **display.** *All* tracked time per activity, logged chunks
+  included, with `loggedSeconds` marking the already-banked part. The card's clock
+  counts everything, so this is the only one that adds up to it.
+- `unloggedBreakdown` — display, unlogged only, running chunk in its own `Running`
+  row. Still used where "what would Done send?" is the question.
+- `unloggedByActivity` — **logging.** Folds the running chunk into `Unlabelled`. A
+  worklog must never read "Running": by the time anything reaches JIRA the chunk is
+  closed and genuinely unattributed.
+
+`/api/done` must use `unloggedByActivity`. Pointing it at `trackedByActivity` would
+re-send time JIRA already has on every Done.
+
+**Relabelling and discarding have deliberately different reach.** Both ignore the
+**open** segment — it isn't finished, the breakdown shows it as `Running` rather than
+under a label, and stopping is what attributes it. They differ on logged time:
+
+- `relabelActivity` **does** touch logged segments. Safe, because a logged segment is
+  never re-sent (`unloggedByActivity` skips it, `pendingLogSeconds` subtracts it), so
+  a label change is display-only. It cannot rewrite the comment on a worklog JIRA
+  already holds, and the UI says so. Restricting it made every Done story — whose
+  segments are all logged — permanently stuck showing "Unlabelled".
+- `discardUnlogged` **must not**. Dropping a logged segment pulls `activeSeconds`
+  below `loggedSeconds`, so the story shows less tracked time than it has already
+  sent, and `pendingLogSeconds` is wrong from then on.
+
+`discardUnlogged` also leaves `loggedSeconds` alone: those worklogs exist in JIRA
+whatever happens locally.
+
+**Unlogged time is summed from segments, never `tracked - loggedSeconds`.** Done
+rounds (`TIMER_ROUND_MINUTES`) and then marks *every* closed segment logged, so a
+story tracked for 7333s and logged as 7200s has 133s of pure rounding residue.
+Subtracting totals counted that as unsent work: the row advertised "2m unlogged"
+while the card's bars correctly showed nothing to resolve and `/api/done` refused to
+send anything. `unloggedSeconds` sums the segments no worklog covers, which is the
+figure all three agree on.
+
+**JIRA's Done category includes cancellation.** Most boards have both `Done` and
+`Cancelled` in `statusCategory = done`, and `/transitions` doesn't guarantee an
+order — so `.find(t => t.toStage === 'done')` will sometimes arm the Done dialog to
+write finished work off as cancelled. `preferredDoneTransition` exists to skip
+those; it returns null rather than guessing when Cancelled is the only way in.
 
 **Timer actions must not depend on JIRA.** `/api/timer` only touches the local
 state file. Keep it that way: the timer has to work when JIRA is down, and the
-setup screen deliberately still offers a Pause button.
+setup screen deliberately still offers a Pause button. This is why starting the
+clock on a To Do story *offers* to move it to In Progress through a separate
+`POST /api/transitions` instead of transitioning as a side effect of starting.
 
 **Never let dev and production share a build directory.** `next dev` and
 `next start` both default to `./.next`, so a dev server in this checkout would
@@ -128,10 +207,16 @@ half-filled `.env.local` shows setup instructions rather than a confusing 401.
   since it's a handful instead of the 405 the raw board list returns.
 - `?name=` on `/rest/agile/1.0/board` filters server-side. Use it rather than
   downloading every board to filter locally.
-- `/api/stories` fetches unresolved **and** resolved issues, so Completed can show
-  sprint work finished without the timer. Resolved issues are never returned by
-  the unresolved query, which is what makes "is this still open in JIRA?"
-  answerable without an extra call.
+- `/api/stories` fetches the Done column **and** everything before it, so Done can
+  show sprint work finished without the timer. A story in neither list isn't on
+  this board, which is what makes "does this board still have it?" answerable
+  without an extra call — and all it answers, hence Tracked elsewhere.
+- `statusCategory` works in the Agile board JQL, and `status.statusCategory` comes
+  back inside the `status` field already being requested, so the columns cost no
+  extra field and no extra call.
+- `aggregatetimespent` rolls subtasks up; `timespent` doesn't, so a parent whose
+  work happens in its subtasks reads as zero. Both are requested and the aggregate
+  wins.
 - Kanban boards return 400 from the active-sprint endpoint; that's treated as
   "no sprint", not an error.
 - A worklog exposes only `comment` as a free-text field, and this instance has no
@@ -148,13 +233,19 @@ half-filled `.env.local` shows setup instructions rather than a confusing 401.
   Start was blue, which put three colours on one card.
 - **Neutrals are near-black at ~8% saturation.** They were 26%, which read as
   navy. Keep new surfaces in the same family rather than introducing a new tint.
+- **Done recedes by losing its surface, not by changing colour.** `.row.receded`
+  drops the panel so a finished story sits directly on the page and falls to
+  `--faint`. That keeps "done" a different *class* of object without spending a
+  colour on it, which matters because green is reserved for the connection dot.
 
 ## Testing
 
-`npm test` covers pure logic only: `time`, `timer-logic`, `conn`, `activities`
-(58 tests). There are no component or HTTP tests — if you add a feature with real
-logic in it, put that logic in a pure function in `lib/` and test it there rather
-than reaching for a rendering harness.
+`npm test` covers pure logic only: `time`, `timer-logic`, `conn`, `activities`,
+`stages` (113 tests). There are no component or HTTP tests — if you add a feature
+with real logic in it, put that logic in a pure function in `lib/` and test it
+there rather than reaching for a rendering harness. `lib/stages.ts` is the worked
+example: the column grouping, focus fallback and transition choice are all pure and
+all tested, leaving `page.tsx` to render what they return.
 
 To exercise the UI by hand, `npm run dev -- -p 4101` and edit `.env.local`; the
 dev server reloads it and the browser reconnects within a few seconds. For states

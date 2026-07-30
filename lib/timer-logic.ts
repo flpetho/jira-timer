@@ -1,4 +1,4 @@
-import type { TimerState, StoryTimer, JiraIssue } from './types';
+import type { TimerState, StoryTimer, JiraIssue, Segment } from './types';
 import { roundSeconds } from './time';
 import { UNLABELLED, RUNNING, type ActivityRaw } from './activities';
 
@@ -101,6 +101,128 @@ export function unloggedByActivity(story: StoryTimer, now: number): ActivityRaw[
 /** For display: the running chunk is its own row, always first. */
 export function unloggedBreakdown(story: StoryTimer, now: number): ActivityRow[] {
   return collectUnlogged(story, now, true);
+}
+
+/**
+ * How a segment's label appears in the breakdown. Absent, blank and whitespace all
+ * read as Unlabelled, which is what the UI offers to relabel.
+ */
+function labelOf(seg: Segment): string {
+  return seg.activity?.trim() || UNLABELLED;
+}
+
+/**
+ * Closed segments under one activity. The open chunk is always excluded: it isn't
+ * finished, the breakdown shows it as `Running` rather than under a label, and
+ * stopping is what attributes it.
+ */
+function closedUnder(story: StoryTimer, activity: string): Segment[] {
+  return story.segments.filter((seg) => seg.end !== null && labelOf(seg) === activity);
+}
+
+/** Tracked time no worklog covers yet — what a future Done still has to send. */
+export function unloggedSeconds(story: StoryTimer, now: number): number {
+  let total = 0;
+  for (const seg of story.segments) {
+    if (seg.logged) continue;
+    total += Math.max(0, Math.round(((seg.end ?? now) - seg.start) / 1000));
+  }
+  return total;
+}
+
+/**
+ * Move time from one activity to another — the fix for a chunk stopped without a
+ * label, or labelled wrongly.
+ *
+ * Applies to logged chunks as well as unlogged ones, which is safe because a logged
+ * segment is never re-sent: `unloggedByActivity` skips it and `pendingLogSeconds`
+ * subtracts it. So this only changes what the breakdown *displays*. The one thing it
+ * can't do is rewrite the comment on a worklog JIRA already has — every Done story
+ * has all its segments logged, so refusing outright just left "Unlabelled" rows
+ * permanently unfixable.
+ */
+export function relabelActivity(
+  state: TimerState,
+  key: string,
+  from: string,
+  to: string,
+): TimerState {
+  const story = state.stories[key];
+  if (!story) return state;
+  const target = to.trim();
+  for (const seg of closedUnder(story, from)) {
+    // Unlabelled is the absence of a label, not a label reading "Unlabelled".
+    seg.activity = target && target !== UNLABELLED ? target : null;
+  }
+  return state;
+}
+
+/**
+ * Throw away unlogged time under one activity — a mis-start, or a stretch that
+ * shouldn't be billed to this story.
+ *
+ * Unlike relabelling, this stays restricted to **unlogged** segments. Dropping a
+ * logged one would pull `activeSeconds` below `loggedSeconds`, leaving the story
+ * showing less tracked time than it has already sent to JIRA and throwing off
+ * `pendingLogSeconds` for good.
+ *
+ * `loggedSeconds` is deliberately left alone: it records what was sent, and those
+ * worklogs still exist regardless of what happens to the local segments.
+ */
+export function discardUnlogged(state: TimerState, key: string, activity: string): TimerState {
+  const story = state.stories[key];
+  if (!story) return state;
+  const doomed = new Set(closedUnder(story, activity).filter((seg) => !seg.logged));
+  story.segments = story.segments.filter((seg) => !doomed.has(seg));
+  return state;
+}
+
+export interface TrackedRow extends ActivityRow {
+  /** How much of `seconds` is already covered by a worklog. */
+  loggedSeconds: number;
+}
+
+/**
+ * Every tracked second on a story grouped by activity, including chunks already
+ * sent to JIRA — which is what separates this from `unloggedBreakdown`.
+ *
+ * Display needs the whole picture: the card's clock counts all tracked time, so a
+ * breakdown that dropped logged chunks didn't add up to the number printed directly
+ * above it, and a story whose time had all been sent showed no categories at all.
+ * `loggedSeconds` keeps the already-banked portion distinguishable rather than
+ * indistinguishable — the reason the logged part used to be omitted entirely.
+ *
+ * Not for logging. `/api/done` must keep using `unloggedByActivity`, or every Done
+ * would re-send time JIRA already has.
+ */
+export function trackedByActivity(story: StoryTimer, now: number): TrackedRow[] {
+  const totals = new Map<string, { seconds: number; loggedSeconds: number }>();
+  let runningSeconds = 0;
+
+  for (const seg of story.segments) {
+    const seconds = Math.max(0, Math.round(((seg.end ?? now) - seg.start) / 1000));
+    if (seconds <= 0) continue;
+    // An open chunk can't have been logged, and gets its own row pinned first.
+    if (seg.end === null) {
+      runningSeconds += seconds;
+      continue;
+    }
+    const name = seg.activity?.trim() || UNLABELLED;
+    const row = totals.get(name) ?? { seconds: 0, loggedSeconds: 0 };
+    row.seconds += seconds;
+    if (seg.logged) row.loggedSeconds += seconds;
+    totals.set(name, row);
+  }
+
+  // First-seen order, so labelling something doesn't reshuffle the list.
+  const rows: TrackedRow[] = [...totals.entries()].map(([activity, t]) => ({
+    activity,
+    seconds: t.seconds,
+    loggedSeconds: t.loggedSeconds,
+  }));
+  return runningSeconds > 0
+    ? [{ activity: RUNNING, seconds: runningSeconds, loggedSeconds: 0, running: true }, ...rows]
+    : rows;
 }
 
 /**

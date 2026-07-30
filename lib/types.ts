@@ -1,5 +1,11 @@
 // Epoch-millisecond timestamps throughout.
 
+/**
+ * The board's three columns, from JIRA's status categories. Lives here rather than
+ * in `stages.ts` so `JiraIssue` can name it without importing back the other way.
+ */
+export type Stage = 'todo' | 'doing' | 'done';
+
 export interface Segment {
   start: number;
   end: number | null; // null = currently running
@@ -30,6 +36,11 @@ export interface JiraIssue {
   key: string;
   summary: string;
   status: string;
+  /**
+   * Which board column this status belongs to, from JIRA's own status category.
+   * Grouping on this rather than on `status` survives a team renaming its columns.
+   */
+  stage: Stage;
   assignee: string | null;
   issuetype: string;
   priority: string | null;
@@ -48,7 +59,10 @@ export interface JiraIssue {
 export interface JiraTransition {
   id: string;
   name: string;
+  /** Display name of the status this lands on. */
   to: string;
+  /** Which board column `to` belongs to. */
+  toStage: Stage;
 }
 
 export interface JiraBoard {
