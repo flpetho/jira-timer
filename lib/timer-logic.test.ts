@@ -11,6 +11,10 @@ import {
   relabelActivity,
   discardUnlogged,
   unloggedSeconds,
+  sweepSeconds,
+  classifiableSeconds,
+  labelClassifiable,
+  markClassified,
   normalizeState,
 } from './timer-logic';
 import type { TimerState } from './types';
@@ -270,6 +274,180 @@ describe('relabelActivity', () => {
     s = relabelActivity(s, 'NOPE-1', 'Meeting', 'Building');
     s = relabelActivity(s, 'TEST-1', 'Testing', 'Building');
     expect(JSON.stringify(s)).toBe(before);
+  });
+});
+
+describe('classify (stop, then file the chunk)', () => {
+  it('files everything unfiled under the chosen activity and reports the total', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M); // stopped, unclassified
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 25 * M); // stopped, unclassified
+    const seconds = labelClassifiable(s, 'TEST-1', 'Building');
+    expect(seconds).toBe(15 * 60);
+    expect(trackedByActivity(s.stories['TEST-1'], 30 * M)).toEqual([
+      { activity: 'Building', seconds: 15 * 60, loggedSeconds: 0 },
+    ]);
+  });
+
+  it('leaves the running chunk out — stopping is what makes time classifiable', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M);
+    s = startTimer(s, issue('TEST-1'), 20 * M); // still running
+    expect(classifiableSeconds(s.stories['TEST-1'])).toBe(10 * 60);
+    const seconds = labelClassifiable(s, 'TEST-1', 'Building');
+    expect(seconds).toBe(10 * 60);
+    const segs = s.stories['TEST-1'].segments;
+    expect(segs[0].activity).toBe('Building');
+    expect(segs[1].activity).toBeUndefined(); // the open one, untouched
+  });
+
+  it('reports nothing when every chunk is already filed and logged', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M);
+    labelClassifiable(s, 'TEST-1', 'Building');
+    s = markClassified(s, 'TEST-1', 10 * 60, 'w1');
+    expect(classifiableSeconds(s.stories['TEST-1'])).toBe(0);
+    expect(labelClassifiable(s, 'TEST-1', 'Meeting')).toBe(0);
+  });
+
+  it('only counts what JIRA accepted, so a later Done cannot re-send it', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M);
+    labelClassifiable(s, 'TEST-1', 'Building');
+    s = markClassified(s, 'TEST-1', 10 * 60, 'w1');
+    expect(s.stories['TEST-1'].loggedSeconds).toBe(10 * 60);
+    expect(unloggedByActivity(s.stories['TEST-1'], 20 * M)).toEqual([]);
+    expect(unloggedSeconds(s.stories['TEST-1'], 20 * M)).toBe(0);
+  });
+
+  // The offline guarantee: labelling happens before the request, marking after.
+  it('keeps the label but not the logged flag when the push fails', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M);
+    labelClassifiable(s, 'TEST-1', 'Building'); // ... and then JIRA is down
+    const seg = s.stories['TEST-1'].segments[0];
+    expect(seg.activity).toBe('Building');
+    expect(seg.logged).toBeUndefined();
+    // Still pending, so the next attempt picks it up — under its existing label.
+    expect(classifiableSeconds(s.stories['TEST-1'])).toBe(10 * 60);
+    expect(unloggedByActivity(s.stories['TEST-1'], 20 * M)).toEqual([
+      { activity: 'Building', seconds: 10 * 60 },
+    ]);
+  });
+
+  it('accumulates across classifications rather than replacing', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M);
+    labelClassifiable(s, 'TEST-1', 'Building');
+    s = markClassified(s, 'TEST-1', 10 * 60, 'w1');
+    s = startTimer(s, issue('TEST-1'), 20 * M);
+    s = pauseActive(s, 30 * M);
+    const seconds = labelClassifiable(s, 'TEST-1', 'Meeting');
+    s = markClassified(s, 'TEST-1', seconds, 'w2');
+    expect(seconds).toBe(10 * 60);
+    expect(s.stories['TEST-1'].loggedSeconds).toBe(20 * 60);
+    expect(trackedByActivity(s.stories['TEST-1'], 40 * M)).toEqual([
+      { activity: 'Building', seconds: 10 * 60, loggedSeconds: 10 * 60 },
+      { activity: 'Meeting', seconds: 10 * 60, loggedSeconds: 10 * 60 },
+    ]);
+  });
+
+  it('is a no-op for an unknown story', () => {
+    const s = emptyState();
+    expect(labelClassifiable(s, 'NOPE-1', 'Building')).toBe(0);
+    expect(markClassified(s, 'NOPE-1', 600, 'w1')).toBe(s);
+  });
+});
+
+describe('trackedByActivity with JIRA’s own time', () => {
+  // A story created and logged against in JIRA, never touched by this timer. It used to
+  // render no bars at all despite having an hour on it.
+  it('reports JIRA time as Untracked when the timer has no record of the story', () => {
+    expect(trackedByActivity(null, 0, 3600)).toEqual([
+      { activity: 'Untracked', seconds: 3600, loggedSeconds: 3600, untracked: true },
+    ]);
+  });
+
+  it('counts only the part this app never sent', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 20 * M, 'Building');
+    s = markDone(s, 'TEST-1', 20 * M, 'w1', 20 * 60);
+    // JIRA holds 90m: our 20m plus 70m from before the timer existed.
+    expect(trackedByActivity(s.stories['TEST-1'], 30 * M, 90 * 60)).toEqual([
+      { activity: 'Building', seconds: 20 * 60, loggedSeconds: 20 * 60 },
+      { activity: 'Untracked', seconds: 70 * 60, loggedSeconds: 70 * 60, untracked: true },
+    ]);
+  });
+
+  it('adds no row when JIRA knows nothing more than we sent', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 20 * M, 'Building');
+    s = markDone(s, 'TEST-1', 20 * M, 'w1', 20 * 60);
+    expect(trackedByActivity(s.stories['TEST-1'], 30 * M, 20 * 60)).toHaveLength(1);
+    expect(trackedByActivity(s.stories['TEST-1'], 30 * M, null)).toHaveLength(1);
+  });
+
+  // Rounding means we can send slightly more than JIRA's figure implies; that must not
+  // surface as a negative or a zero-width bar.
+  it('never goes negative when we sent more than JIRA reports', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 20 * M, 'Building');
+    s = markDone(s, 'TEST-1', 20 * M, 'w1', 25 * 60);
+    const rows = trackedByActivity(s.stories['TEST-1'], 30 * M, 20 * 60);
+    expect(rows.some((r) => r.untracked)).toBe(false);
+  });
+
+  it('trails the live categories, and keeps Running first', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 10 * M, 'Building');
+    s = startTimer(s, issue('TEST-1'), 20 * M); // running
+    const rows = trackedByActivity(s.stories['TEST-1'], 30 * M, 45 * 60);
+    expect(rows.map((r) => r.activity)).toEqual(['Running', 'Building', 'Untracked']);
+  });
+
+  it('sums to JIRA’s total plus anything not yet sent', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 15 * M, 'Building'); // 15m tracked, unsent
+    const rows = trackedByActivity(s.stories['TEST-1'], 20 * M, 60 * 60);
+    expect(rows.reduce((n, r) => n + r.seconds, 0)).toBe(75 * 60);
+  });
+});
+
+describe('sweepSeconds (what Done still sends)', () => {
+  // The bug this closes: roundSeconds floors at a full increment, so a few seconds of
+  // slop between Stop and Done posted five whole minutes — while the dialog said
+  // there was nothing left to log.
+  it('sends nothing for a sub-minute leftover', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 30 * 1000); // 30 seconds of slop
+    expect(unloggedSeconds(s.stories['TEST-1'], 60 * M)).toBe(30);
+    expect(sweepSeconds(s.stories['TEST-1'], 60 * M, 5)).toBe(0);
+  });
+
+  it('rounds a real leftover to the increment', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 12 * M);
+    expect(sweepSeconds(s.stories['TEST-1'], 20 * M, 5)).toBe(10 * 60);
+  });
+
+  it('sends nothing once classification has already filed everything', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 25 * M);
+    const seconds = labelClassifiable(s, 'TEST-1', 'Building');
+    s = markClassified(s, 'TEST-1', seconds, 'w1');
+    expect(sweepSeconds(s.stories['TEST-1'], 30 * M, 5)).toBe(0);
+  });
+
+  it('includes the chunk still running, since Done closes it', () => {
+    const s = startTimer(emptyState(), issue('TEST-1'), 0);
+    expect(sweepSeconds(s.stories['TEST-1'], 12 * M, 5)).toBe(10 * 60);
+  });
+
+  it('never rounds below one minute even at a one-minute increment', () => {
+    let s = startTimer(emptyState(), issue('TEST-1'), 0);
+    s = pauseActive(s, 90 * 1000);
+    expect(sweepSeconds(s.stories['TEST-1'], 5 * M, 1)).toBe(2 * 60);
   });
 });
 

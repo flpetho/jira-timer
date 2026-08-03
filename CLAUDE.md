@@ -36,6 +36,36 @@ Two things follow from this that are easy to undo:
   a full card *inside its own column*, so its position can never disagree with the
   heading above it.
 
+## The sprint is never stored
+
+Only the *board* is persisted (`jt.board`). `getActiveSprint` re-reads
+`state=active` from JIRA on every 30-second poll, so the app follows the current
+iteration on its own — there is no sprint setting to go stale when one closes. Don't
+add one without a reason.
+
+Two known edges:
+
+- It takes `values[0]`, so a board with **parallel active sprints** silently gets one
+  of them.
+- `getActiveSprint` returns null both for Kanban (which 400s) *and* for a scrum board
+  between iterations. Only the board's `type` separates those, which is why the
+  between-iterations notice is decided client-side, where the board list is. There the
+  fallback to every board issue is a backlog rather than a plan, so it's put behind
+  "Show all N issues" instead of filling the columns.
+
+## Untracked time
+
+`trackedByActivity` takes JIRA's `secondsSpent` and turns whatever this app didn't send
+into a trailing **Untracked** row — time logged before the timer existed, by someone
+else, or in JIRA directly. Two reasons it exists: the bars otherwise disagreed with the
+"N spent" figure printed right above them, and a story created and logged against
+entirely in JIRA showed no bars at all despite having hours on it.
+
+It's display-only. No local segments sit behind it, so it never offers relabel or
+remove (`canRelabel` excludes it), and it never appears on the clock — the clock means
+"what this timer measured", and a card with no local tracking correctly reads 00:00:00.
+`story` may be null for these, so `trackedByActivity` accepts null.
+
 ## Focused is not the same as active
 
 `activeKey` is the story whose clock is running. **Focused** (`focusKey` in
@@ -50,10 +80,59 @@ A third thing sits alongside those two: **open**. Any row can be opened into the
 same card (`openCards` + `isOpen` in `page.tsx`), and the focused story is always
 open. So the focused card has no Close button — there'd be nothing to collapse to.
 
-An opened card may have **no timer at all** (`row.timer === null`) — a Done issue
-someone finished without this app. That card still has a summary, status and
-description worth reading, so it renders without a clock or bars rather than
-bailing out. Guard on `story` before touching segments.
+An opened card may have **no timer at all** (`row.timer === null`) — an issue created,
+logged against or finished entirely in JIRA. It still renders the full shape: clock at
+00:00:00, the estimate line, and an Untracked bar for JIRA's own time. Guard on `story`
+before touching segments, but don't skip the card furniture — a story with hours on it
+looking emptier than its siblings is what prompted this.
+
+## Start, Stop, file, finish
+
+The interaction model, in order:
+
+1. **Start** opens a segment.
+2. **Stop** closes it and leaves it *unfiled*.
+3. **Filing** it under an activity posts a worklog to JIRA immediately, at the chunk's
+   exact length.
+4. **Done** sweeps anything still unfiled, then transitions. Usually there's nothing
+   to sweep, so it's a pure status change — which is why it needs no dialog full of
+   arithmetic.
+
+`POST /api/classify` is the only timer-adjacent route that talks to JIRA, and it's
+separate from `/api/timer` precisely so that rule survives. It labels the chunks
+**before** the request and marks them logged **only after** it succeeds, so a failure
+leaves them filed-but-pending and the next classify or Done retries them under the
+label they already have.
+
+**Filing is exact; only the Done sweep rounds.** Rounding each chunk would inflate
+badly (`lib/activities.ts` explains the three-2-minute-chunks case). The sweep is a
+single bucket, so rounding there is safe.
+
+**`roundSeconds` floors at one whole increment.** Any positive value becomes 5 minutes
+by default. That was fine when Done was the only writer; it is not fine now, because
+the leftover at Done time is usually a few seconds between Stop and Done. Go through
+`sweepSeconds`, which returns 0 below `MIN_LOGGABLE_SECONDS`. Calling `roundSeconds`
+directly on a leftover reintroduces a bug where the dialog says "nothing left to log"
+and the route posts five minutes anyway.
+
+## Focus mode
+
+A Chrome/Edge-only Document Picture-in-Picture window holding one story: key, big
+clock, and the same Start/Stop/file controls. Portalled out of `page.tsx`'s own tree,
+so it shares all state — no second poll loop and nothing to synchronise. Two traps,
+both of which bit during development:
+
+- **`requestWindow()` must be called during the click.** Call it from an effect — after
+  a state update and re-render — and Chrome rejects it with
+  `NotAllowedError: Document PiP requires user activation`. That's why `openFocus` is
+  an async click handler rather than a `useEffect`.
+- **A PiP document starts with no styles.** Its stylesheets are cloned from the main
+  document on open; skip that and the card renders as unstyled serif text.
+
+Hold the `Window` in state rather than a boolean. An earlier version keyed a
+`FocusWindow` component's effect off its `onClose` prop, which is a new closure every
+render — and since the clock re-renders every second, the window was destroyed and
+recreated once a second.
 
 ## The one important design rule
 
@@ -80,7 +159,8 @@ app/
     boards/         Boards you have work in; ?q= searches all of them
     stories/        Open + resolved issues for a board, or board=all to pool
     timer/          start / pause / relabel / discard — local only, never calls JIRA
-    done/           Post one worklog per activity, optionally transition status
+    classify/       File the stopped chunk under an activity and log it to JIRA
+    done/           Sweep anything unfiled, then transition. Often logs nothing.
     transitions/    GET the available transitions; POST one, without logging time
 lib/
   jira.ts           All JIRA HTTP. Has `import 'server-only'`.
@@ -96,6 +176,9 @@ scripts/
   preflight.mjs     Friendly checks before `npm run dev`.
   serve.sh          Production server, launched by launchd.
   service.sh        start/stop/restart/status/update for the launchd agent.
+  mock-jira.mjs     A pretend JIRA, in memory. Worklogs accumulate, transitions stick.
+  sandbox.sh        Throwaway app on :4200 wired to the mock, with a scratch HOME.
+                    MOCK_NO_SPRINT=1 simulates the gap between iterations.
 ```
 
 ## Things that will bite you
@@ -241,16 +324,24 @@ half-filled `.env.local` shows setup instructions rather than a confusing 401.
 ## Testing
 
 `npm test` covers pure logic only: `time`, `timer-logic`, `conn`, `activities`,
-`stages` (113 tests). There are no component or HTTP tests — if you add a feature
+`stages` (131 tests). There are no component or HTTP tests — if you add a feature
 with real logic in it, put that logic in a pure function in `lib/` and test it
 there rather than reaching for a rendering harness. `lib/stages.ts` is the worked
 example: the column grouping, focus fallback and transition choice are all pure and
 all tested, leaving `page.tsx` to render what they return.
 
-To exercise the UI by hand, `npm run dev -- -p 4101` and edit `.env.local`; the
-dev server reloads it and the browser reconnects within a few seconds. For states
-that need controlled data, point `JIRA_BASE_URL` at a small local mock and set
-`HOME` to a temp dir so the real state file is untouched.
+**To exercise anything that writes to JIRA, use the sandbox.** `sh scripts/sandbox.sh`
+serves the app on :4200 against `scripts/mock-jira.mjs` with `HOME` redirected to a
+scratch dir, so no worklog, transition or state write can reach a real board or the
+real state file. This matters more than it used to: filing time now posts a worklog
+the moment you click a category, so "just try it on a real story" creates real
+worklogs.
+
+Note that env vars given on the command line beat `.env.local` — that's what makes the
+sandbox safe even though the real credentials are sitting right there. Verify with
+`curl -s localhost:4200/api/me` and check `baseUrl` before trusting it.
+
+For read-only UI work, `npm run dev -- -p 4101` against the real board is still fine.
 
 ## Style
 

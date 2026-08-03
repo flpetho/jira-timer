@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readState, writeState } from '@/lib/store';
-import { markDone, pendingLogSeconds, unloggedByActivity } from '@/lib/timer-logic';
+import { markDone, sweepSeconds, unloggedByActivity } from '@/lib/timer-logic';
 import { apportion } from '@/lib/activities';
-import { activeSeconds } from '@/lib/time';
 import { addWorklog, doTransition } from '@/lib/jira';
 
 export const dynamic = 'force-dynamic';
@@ -21,23 +20,27 @@ export async function POST(req: Request) {
 
   const now = Date.now();
   const roundMin = parseInt(process.env.TIMER_ROUND_MINUTES || '5', 10);
-  const raw = activeSeconds(story.segments, now);
-  // Log only what JIRA doesn't have yet. A story can legitimately be logged more
-  // than once — reopened in JIRA, or simply worked on again after a first Done —
-  // and every worklog we pushed still counts, so re-sending it would double up.
-  const alreadyLogged = story.loggedSeconds ?? 0;
-  const rounded = pendingLogSeconds(raw, alreadyLogged, roundMin);
+  // Whatever classification didn't already send: computed from the segments no
+  // worklog covers, so Done can never re-send time JIRA already has. Sub-minute
+  // leftovers count as nothing — see sweepSeconds.
+  const rounded = sweepSeconds(story, now, roundMin);
 
+  // Nothing left to send is the normal case now that classifying logs as you go, so
+  // it isn't an error — Done is just a status change. This is what makes closing a
+  // story one click instead of a dialog.
   if (rounded <= 0) {
-    return NextResponse.json(
-      {
-        error: alreadyLogged
-          ? `No new time to log — ${Math.round(alreadyLogged / 60)}m is already in JIRA.`
-          : 'no active time recorded to log',
-        loggedSeconds: alreadyLogged,
-      },
-      { status: 400 },
-    );
+    story.doneAt = now;
+    if (state.activeKey === key) state.activeKey = null;
+    await writeState(state);
+    try {
+      if (transitionId) await doTransition(key, transitionId);
+    } catch (e: unknown) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : String(e), state },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json({ ok: true, loggedSeconds: 0, breakdown: [], state });
   }
 
   const startedMs = story.segments[0]?.start ?? now;

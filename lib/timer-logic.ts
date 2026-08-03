@@ -1,6 +1,6 @@
 import type { TimerState, StoryTimer, JiraIssue, Segment } from './types';
 import { roundSeconds } from './time';
-import { UNLABELLED, RUNNING, type ActivityRaw } from './activities';
+import { UNLABELLED, RUNNING, UNTRACKED, type ActivityRaw } from './activities';
 
 export type IssueMeta = Pick<JiraIssue, 'key' | 'summary' | 'status' | 'assignee' | 'estimateSeconds'>;
 
@@ -120,6 +120,89 @@ function closedUnder(story: StoryTimer, activity: string): Segment[] {
   return story.segments.filter((seg) => seg.end !== null && labelOf(seg) === activity);
 }
 
+/**
+ * Chunks a classification can act on: finished, and not yet covered by a worklog.
+ *
+ * The running chunk is excluded because it isn't finished — stopping is what makes
+ * time classifiable. That's the whole shape of the model: Start, Stop, then file the
+ * chunk under a category.
+ */
+export function classifiable(story: StoryTimer): Segment[] {
+  return story.segments.filter((seg) => seg.end !== null && !seg.logged);
+}
+
+/** How much a classification would send to JIRA right now. */
+export function classifiableSeconds(story: StoryTimer): number {
+  return classifiable(story).reduce(
+    (n, seg) => n + Math.max(0, Math.round(((seg.end as number) - seg.start) / 1000)),
+    0,
+  );
+}
+
+/**
+ * File every unfiled chunk under one activity, and report what should be logged.
+ *
+ * Called before the JIRA request, so the label survives even if that request fails —
+ * the chunks stay unlogged and the next classify or Done retries them. Returns 0 when
+ * there's nothing waiting, which the caller treats as "nothing to do".
+ */
+export function labelClassifiable(state: TimerState, key: string, activity: string): number {
+  const story = state.stories[key];
+  if (!story) return 0;
+  const target = activity.trim();
+  const pending = classifiable(story);
+  for (const seg of pending) {
+    // Unlabelled is the absence of a label, not a label reading "Unlabelled".
+    seg.activity = target && target !== UNLABELLED ? target : null;
+  }
+  return classifiableSeconds(story);
+}
+
+/**
+ * Mark the filed chunks as covered, once JIRA has actually accepted the worklog.
+ *
+ * Separate from `labelClassifiable` on purpose: a chunk must never read as logged
+ * because we *tried* to log it. `loggedSeconds` grows by what JIRA accepted, which is
+ * what stops a later Done from re-sending the same time.
+ */
+export function markClassified(
+  state: TimerState,
+  key: string,
+  loggedSeconds: number,
+  worklogId: string,
+): TimerState {
+  const story = state.stories[key];
+  if (!story) return state;
+  for (const seg of classifiable(story)) seg.logged = true;
+  story.loggedSeconds = (story.loggedSeconds ?? 0) + loggedSeconds;
+  story.worklogId = worklogId;
+  return state;
+}
+
+/**
+ * JIRA's smallest worklog. Below this there's nothing it would accept, so both the UI
+ * and `/api/done` treat sub-minute time as nothing — shared so they can't disagree,
+ * which they did: the dialog said "nothing left to log" while the route posted five
+ * minutes for it.
+ */
+export const MIN_LOGGABLE_SECONDS = 60;
+
+/**
+ * What Done should still send: the unfiled leftover, rounded — or nothing at all when
+ * it's under a minute.
+ *
+ * `roundSeconds` deliberately floors at one full increment, so *any* positive value
+ * becomes 5 minutes by default. That was right when Done was the only writer and the
+ * leftover was real work. It's wrong now: classification sends time as you go, so
+ * what's left at Done is usually a few seconds between Stop and Done, and inflating
+ * that to five logged minutes corrupts the estimate-vs-actual data the app exists for.
+ */
+export function sweepSeconds(story: StoryTimer, now: number, roundMinutes: number): number {
+  const leftover = unloggedSeconds(story, now);
+  if (leftover < MIN_LOGGABLE_SECONDS) return 0;
+  return roundSeconds(leftover, roundMinutes);
+}
+
 /** Tracked time no worklog covers yet — what a future Done still has to send. */
 export function unloggedSeconds(story: StoryTimer, now: number): number {
   let total = 0;
@@ -180,6 +263,8 @@ export function discardUnlogged(state: TimerState, key: string, activity: string
 export interface TrackedRow extends ActivityRow {
   /** How much of `seconds` is already covered by a worklog. */
   loggedSeconds: number;
+  /** JIRA's own time that this app never measured. Not backed by any local segment. */
+  untracked?: boolean;
 }
 
 /**
@@ -192,14 +277,26 @@ export interface TrackedRow extends ActivityRow {
  * `loggedSeconds` keeps the already-banked portion distinguishable rather than
  * indistinguishable — the reason the logged part used to be omitted entirely.
  *
+ * `jiraSpent` is JIRA's own total for the issue. Whatever part of it this app never
+ * sent becomes a trailing `Untracked` row: time logged before the timer existed, by
+ * someone else, or in JIRA directly. Without it the bars silently disagreed with the
+ * "N spent" figure printed immediately above them, and a story whose time came entirely
+ * from elsewhere showed no bars at all despite having hours against it.
+ *
+ * `story` may be null for exactly that case — an issue this app has never tracked.
+ *
  * Not for logging. `/api/done` must keep using `unloggedByActivity`, or every Done
  * would re-send time JIRA already has.
  */
-export function trackedByActivity(story: StoryTimer, now: number): TrackedRow[] {
+export function trackedByActivity(
+  story: StoryTimer | null,
+  now: number,
+  jiraSpent?: number | null,
+): TrackedRow[] {
   const totals = new Map<string, { seconds: number; loggedSeconds: number }>();
   let runningSeconds = 0;
 
-  for (const seg of story.segments) {
+  for (const seg of story?.segments ?? []) {
     const seconds = Math.max(0, Math.round(((seg.end ?? now) - seg.start) / 1000));
     if (seconds <= 0) continue;
     // An open chunk can't have been logged, and gets its own row pinned first.
@@ -220,9 +317,22 @@ export function trackedByActivity(story: StoryTimer, now: number): TrackedRow[] 
     seconds: t.seconds,
     loggedSeconds: t.loggedSeconds,
   }));
-  return runningSeconds > 0
-    ? [{ activity: RUNNING, seconds: runningSeconds, loggedSeconds: 0, running: true }, ...rows]
-    : rows;
+  if (runningSeconds > 0) {
+    rows.unshift({ activity: RUNNING, seconds: runningSeconds, loggedSeconds: 0, running: true });
+  }
+
+  // Trails the rest: it's history, and the least actionable thing on the card.
+  const untracked = Math.max(0, (jiraSpent ?? 0) - (story?.loggedSeconds ?? 0));
+  if (untracked > 0) {
+    rows.push({
+      activity: UNTRACKED,
+      seconds: untracked,
+      // Wholly in JIRA already, so it renders as banked rather than pending.
+      loggedSeconds: untracked,
+      untracked: true,
+    });
+  }
+  return rows;
 }
 
 /**

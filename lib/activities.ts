@@ -20,6 +20,13 @@ export const UNLABELLED = 'Unlabelled';
 export const RUNNING = 'Running';
 
 /**
+ * Time JIRA has that this app didn't send: logged before the timer existed, logged
+ * by someone else, or entered in JIRA directly. Display-only, and never relabelled or
+ * removed — there are no local segments behind it to change.
+ */
+export const UNTRACKED = 'Untracked';
+
+/**
  * Parse JIRA_ACTIVITIES. Unset falls back to the default set; an explicitly blank
  * value means "off", so Pause behaves as it did before activities existed.
  */
